@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.cache/
+cdk.out/
+*.js.map
+*.d.ts
+!apps/*/src/types/*.d.ts
+.env
+.env.*
+*.pem

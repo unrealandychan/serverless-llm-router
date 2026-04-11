@@ -1,0 +1,28 @@
+{
+  "name": "@llm-gateway/gateway",
+  "version": "0.1.0",
+  "private": true,
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "openai": "^4.96.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@aws-sdk/client-bedrock-runtime": "^3.1029.0",
+    "@aws-sdk/client-dynamodb": "^3.1029.0",
+    "@aws-sdk/client-secrets-manager": "^3.1029.0",
+    "@aws-sdk/client-sqs": "^3.1029.0",
+    "@aws-sdk/lib-dynamodb": "^3.1029.0",
+    "@types/aws-lambda": "^8.10.145",
+    "@types/node": "^22.14.0",
+    "typescript": "^5.8.3",
+    "vitest": "^3.1.1"
+  }
+}

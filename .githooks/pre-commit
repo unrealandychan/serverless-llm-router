@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Enforce release-note updates for every commit.
+# Bypass with: SKIP_RELEASE_NOTE=1 git commit ...
+
+if [[ "${SKIP_RELEASE_NOTE:-}" == "1" ]]; then
+  exit 0
+fi
+
+if git diff --cached --name-only | grep -qx 'RELEASE-NOTE.md'; then
+  exit 0
+fi
+
+echo "ERROR: RELEASE-NOTE.md must be updated for each commit."
+echo "Hint: add notes under the [Unreleased] section and stage the file."
+exit 1
