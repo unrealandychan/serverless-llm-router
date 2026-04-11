@@ -5,6 +5,12 @@ import { DynamoDBDocumentClient, QueryCommand } from '@aws-sdk/lib-dynamodb';
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TABLE_NAME = process.env.TABLE_NAME ?? '';
 
+const CORS_HEADERS = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Headers': 'Content-Type,Authorization',
+    'Access-Control-Allow-Methods': 'GET,OPTIONS',
+};
+
 /**
  * Estimated cost per 1M tokens (input / output) in USD.
  * Keyed as "provider/model-id".
@@ -36,7 +42,7 @@ function estimateCost(provider: string, model: string, inputTokens: number, outp
 function errResp(statusCode: number, message: string): APIGatewayProxyResult {
     return {
         statusCode,
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
         body: JSON.stringify({ error: { message, type: 'invalid_request_error' } }),
     };
 }
@@ -119,7 +125,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
     return {
         statusCode: 200,
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
         body: JSON.stringify({
             tenantId,
             period: { from: fromDate, to: toDate },

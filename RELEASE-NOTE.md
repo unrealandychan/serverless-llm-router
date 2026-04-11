@@ -2,10 +2,11 @@
 
 Use this file as the running release note for each update.
 
-## [Unreleased]
+## [2026-04-12] - Fix the CORS probelm of the billing dashboard adding Gemini support
 
 ### Added
-- 
+- CORS headers to billing dashboard API responses to allow embedding in CloudFront-hosted static site.
+- Support for Google Gemini models in the routing config and provider adapter.
 
 ### Changed
 - 
