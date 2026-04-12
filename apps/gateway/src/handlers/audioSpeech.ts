@@ -2,6 +2,7 @@ import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { z } from 'zod';
 import { getOpenAIAdapter } from '../providers/registry';
 import { checkAndIncrementRateLimit, RateLimitError } from '../middleware/rateLimiter';
+import { CORS_HEADERS } from '../util/cors';
 
 /**
  * POST /v1/audio/speech
@@ -22,7 +23,7 @@ const SpeechSchema = z.object({
 function errResp(statusCode: number, message: string, type = 'invalid_request_error'): APIGatewayProxyResult {
     return {
         statusCode,
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
         body: JSON.stringify({ error: { message, type } }),
     };
 }
@@ -57,7 +58,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         const result = await adapter.speak(parsed.data);
         return {
             statusCode: 200,
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
             body: JSON.stringify(result),
         };
     } catch (err) {
