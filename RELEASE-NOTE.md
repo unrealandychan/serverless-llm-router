@@ -2,6 +2,10 @@
 
 Use this file as the running release note for each update.
 
+## [2026-04-12] - Adding more plan details and fixing some errors
+### Added
+- Example request and response formats for both streaming and non-streaming modes.
+
 ## [2026-04-12] - Endpoint-mode routing fix and Vertex support
 
 ### Added

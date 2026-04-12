@@ -83,6 +83,7 @@ Bedrock uses `InvokeModelWithResponseStream` which returns a `ReadableStream` of
 | Model alias allowlist | Deny if tenant's key is not permitted for the requested alias |
 | CloudWatch EMF metrics | `RequestCount`, `StreamCount`, `SuccessRate`, `FallbackCount`, `ProviderLatencyMs`, `TTFB`, `InputTokens`, `OutputTokens`, `EstimatedCostUsd` |
 | Cost estimation | Token counts × provider pricing table; stored in DynamoDB |
+| Provider key pools | Support multiple keys per provider (for example 2+ OpenAI keys) and select a key per request (round-robin or weighted) to balance token usage across accounts, similar to LiteLLM |
 | DLQ replay tool | Script to replay DLQ messages for failed audit events |
 | Request ID propagation | `X-Request-Id` in response headers and structured log output |
 | Input validation hardening | Reject oversized messages, deeply nested objects |

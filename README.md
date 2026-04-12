@@ -448,6 +448,6 @@ npm run lint        # tsc --noEmit type check
 
 ## Roadmap
 
-- **Phase 3**: Per-tenant CloudWatch EMF metrics, DLQ replay tool, model alias allowlist per tenant, prompt/response logging opt-in
+- **Phase 3**: Per-tenant CloudWatch EMF metrics, DLQ replay tool, model alias allowlist per tenant, prompt/response logging opt-in, provider key pools (for example multiple OpenAI keys) with per-request key selection to balance usage across accounts
 
 See [plan/phases.md](plan/phases.md) for the full roadmap.
