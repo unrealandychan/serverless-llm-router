@@ -38,6 +38,11 @@ export class GatewayStack extends cdk.Stack {
             description: 'Gemini API key for OpenAI-compatible Gemini endpoint',
         });
 
+        const vertexSecret = new secretsmanager.Secret(this, 'VertexCredentialsJson', {
+            secretName: '/llm-gateway/vertex-credentials-json',
+            description: 'Vertex credentials JSON for OpenAI-compatible Vertex endpoint (service account or WIF credentials)',
+        });
+
         // Gateway API keys: JSON map of { "<token>": { "tenantId": "...", "label": "..." } }
         // Populate AFTER deploy: aws secretsmanager put-secret-value --secret-id /llm-gateway/api-keys --secret-string '{"gw_sk_changeme":{"tenantId":"t_default","label":"default"}}'
         const apiKeysSecret = new secretsmanager.Secret(this, 'ApiKeys', {
@@ -130,6 +135,9 @@ export class GatewayStack extends cdk.Stack {
             ANTHROPIC_SECRET_ARN: anthropicSecret.secretArn,
             OPENAI_COMPAT_GEMINI_BASE_URL: 'https://generativelanguage.googleapis.com/v1beta/openai',
             OPENAI_COMPAT_GEMINI_SECRET_ARN: geminiSecret.secretArn,
+            OPENAI_COMPAT_VERTEX_BASE_URL:
+                'https://us-central1-aiplatform.googleapis.com/v1/projects/YOUR_VERTEX_PROJECT/locations/us-central1/endpoints/openapi',
+            OPENAI_COMPAT_VERTEX_CREDENTIALS_SECRET_ARN: vertexSecret.secretArn,
             ROUTES_TABLE_NAME: routesTable.tableName,
             RATE_LIMITS_TABLE_NAME: rateLimitsTable.tableName,
             RPM_LIMIT: '60',
@@ -216,6 +224,7 @@ export class GatewayStack extends cdk.Stack {
         openAiSecret.grantRead(gatewayFn);
         anthropicSecret.grantRead(gatewayFn);
         geminiSecret.grantRead(gatewayFn);
+        vertexSecret.grantRead(gatewayFn);
         routesTable.grantReadData(gatewayFn);
         rateLimitsTable.grantReadWriteData(gatewayFn);
         // Bedrock uses the Lambda execution role — no secret needed
@@ -498,6 +507,11 @@ export class GatewayStack extends cdk.Stack {
         new cdk.CfnOutput(this, 'GeminiSecretArn', {
             value: geminiSecret.secretArn,
             description: 'Secrets Manager ARN — populate with your Gemini API key',
+        });
+
+        new cdk.CfnOutput(this, 'VertexSecretArn', {
+            value: vertexSecret.secretArn,
+            description: 'Secrets Manager ARN — populate with Vertex credentials JSON',
         });
 
         new cdk.CfnOutput(this, 'ApiKeysSecretArn', {

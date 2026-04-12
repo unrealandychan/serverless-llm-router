@@ -1,4 +1,5 @@
 import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
+import { GoogleAuth } from 'google-auth-library';
 import { ProviderAdapter } from './types';
 import { OpenAIAdapter } from './openai';
 import { BedrockAdapter } from './bedrock';
@@ -19,6 +20,27 @@ async function fetchSecret(secretArn: string): Promise<string> {
 }
 
 const adapterCache = new Map<string, ProviderAdapter>();
+
+function createGoogleAuthHeaderProvider(credentialsJson: string): () => Promise<string> {
+    let parsed: Record<string, unknown>;
+    try {
+        parsed = JSON.parse(credentialsJson) as Record<string, unknown>;
+    } catch {
+        throw new Error('Vertex credentials secret must be valid JSON credentials');
+    }
+
+    const auth = new GoogleAuth({
+        credentials: parsed,
+        scopes: ['https://www.googleapis.com/auth/cloud-platform'],
+    });
+
+    return async () => {
+        const headers = await auth.getRequestHeaders();
+        const authHeader = headers.get('authorization') ?? headers.get('Authorization');
+        if (!authHeader) throw new Error('Failed to obtain Google OAuth Authorization header');
+        return authHeader;
+    };
+}
 
 /**
  * Return a lazily-initialized, cached ProviderAdapter for the given provider name.
@@ -56,6 +78,8 @@ export async function getProviderAdapter(provider: string): Promise<ProviderAdap
             // env vars:
             //   OPENAI_COMPAT_<PROFILE>_BASE_URL
             //   OPENAI_COMPAT_<PROFILE>_SECRET_ARN
+            // Vertex profile also supports:
+            //   OPENAI_COMPAT_VERTEX_CREDENTIALS_SECRET_ARN (preferred)
             if (provider.startsWith('openai_compatible:')) {
                 const profile = provider.slice('openai_compatible:'.length).trim();
                 if (!profile) {
@@ -68,11 +92,31 @@ export async function getProviderAdapter(provider: string): Promise<ProviderAdap
 
                 const baseUrlEnv = `OPENAI_COMPAT_${normalizedProfile}_BASE_URL`;
                 const secretArnEnv = `OPENAI_COMPAT_${normalizedProfile}_SECRET_ARN`;
+                const credsSecretArnEnv = `OPENAI_COMPAT_${normalizedProfile}_CREDENTIALS_SECRET_ARN`;
 
                 const baseURL = process.env[baseUrlEnv];
                 const secretArn = process.env[secretArnEnv];
+                const credentialsSecretArn = process.env[credsSecretArnEnv];
 
                 if (!baseURL) throw new Error(`${baseUrlEnv} environment variable is not set`);
+                if (normalizedProfile === 'VERTEX') {
+                    const vertexSecretArn = credentialsSecretArn ?? secretArn;
+                    if (!vertexSecretArn) {
+                        throw new Error(
+                            `${credsSecretArnEnv} (or legacy ${secretArnEnv}) environment variable is not set`,
+                        );
+                    }
+
+                    const credentialsJson = await fetchSecret(vertexSecretArn);
+                    const authHeaderProvider = createGoogleAuthHeaderProvider(credentialsJson);
+                    adapter = new OpenAIAdapter('vertex-oauth', {
+                        baseURL,
+                        name: provider,
+                        authHeaderProvider,
+                    });
+                    break;
+                }
+
                 if (!secretArn) throw new Error(`${secretArnEnv} environment variable is not set`);
 
                 const apiKey = await fetchSecret(secretArn);

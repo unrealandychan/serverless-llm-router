@@ -37,6 +37,7 @@ export type FallbackInvokeResult<T> = {
   result: T;
   provider: string;
   providerModel: string;
+  endpointMode?: ProviderTarget['endpoint_mode'];
 };
 
 /**
@@ -46,7 +47,7 @@ export type FallbackInvokeResult<T> = {
  */
 export async function routeWithFallback<T>(
   alias: string,
-  invoke: (provider: string, providerModel: string) => Promise<T>,
+  invoke: (provider: string, providerModel: string, endpointMode?: ProviderTarget['endpoint_mode']) => Promise<T>,
   config: Record<string, RouteConfig> = modelMap,
 ): Promise<FallbackInvokeResult<T>> {
   const queue: string[] = [alias];
@@ -62,8 +63,13 @@ export async function routeWithFallback<T>(
 
     const target = selectTarget(route.targets);
     try {
-      const result = await invoke(target.provider, target.model);
-      return { result, provider: target.provider, providerModel: target.model };
+      const result = await invoke(target.provider, target.model, target.endpoint_mode);
+      return {
+        result,
+        provider: target.provider,
+        providerModel: target.model,
+        endpointMode: target.endpoint_mode,
+      };
     } catch (err) {
       if (isRetryableError(err) && route.fallbacks?.length) {
         queue.push(...route.fallbacks.filter((f) => !visited.has(f)));

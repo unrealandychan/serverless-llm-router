@@ -22,10 +22,27 @@ export class OpenAIAdapter implements ProviderAdapter, EmbeddingAdapter, ImageGe
 
     private readonly client: OpenAI;
 
-    constructor(apiKey: string, options?: { baseURL?: string; name?: string }) {
+    constructor(
+        apiKey: string,
+        options?: {
+            baseURL?: string;
+            name?: string;
+            authHeaderProvider?: () => Promise<string | undefined>;
+        },
+    ) {
         this.client = new OpenAI({
             apiKey,
             ...(options?.baseURL ? { baseURL: options.baseURL } : {}),
+            ...(options?.authHeaderProvider
+                ? {
+                    fetch: async (url, init) => {
+                        const headers = new Headers(init?.headers ?? {});
+                        const authHeader = await options.authHeaderProvider!();
+                        if (authHeader) headers.set('Authorization', authHeader);
+                        return fetch(url, { ...init, headers });
+                    },
+                }
+                : {}),
         });
         this.name = options?.name ?? 'openai';
     }
@@ -40,116 +57,150 @@ export class OpenAIAdapter implements ProviderAdapter, EmbeddingAdapter, ImageGe
     }
 
     async invoke(req: NormalizedRequest): Promise<NormalizedResponse> {
+        const endpointMode = req.endpoint_mode ?? 'auto';
+
+        if (endpointMode === 'chat') {
+            return this.invokeChat(req);
+        }
+
+        if (endpointMode === 'completions') {
+            return this.invokeCompletions(req);
+        }
+
         try {
-            const response = await this.client.chat.completions.create({
-                model: req.model,
-                messages: req.messages as OpenAI.ChatCompletionMessageParam[],
-                temperature: req.temperature,
-                max_tokens: req.max_tokens,
-                stream: false,
-            });
-
-            const choice = response.choices[0];
-            if (!choice) throw new Error('OpenAI returned no choices');
-
-            return {
-                id: response.id,
-                content: choice.message.content ?? '',
-                finish_reason: choice.finish_reason ?? undefined,
-                input_tokens: response.usage?.prompt_tokens,
-                output_tokens: response.usage?.completion_tokens,
-            };
+            return await this.invokeChat(req);
         } catch (err) {
             if (!this.isChatUnsupportedError(err)) throw err;
-
-            // Some OpenAI-compatible models only expose /v1/completions.
-            const response = await this.client.completions.create({
-                model: req.model,
-                prompt: this.messagesToPrompt(req.messages),
-                temperature: req.temperature,
-                max_tokens: req.max_tokens,
-                stream: false,
-            });
-
-            const choice = response.choices[0];
-            if (!choice) throw new Error('OpenAI-compatible completions returned no choices');
-
-            return {
-                id: response.id,
-                content: choice.text ?? '',
-                finish_reason: choice.finish_reason ?? undefined,
-                input_tokens: response.usage?.prompt_tokens,
-                output_tokens: response.usage?.completion_tokens,
-            };
+            return this.invokeCompletions(req);
         }
     }
 
     async *stream(req: NormalizedRequest): AsyncGenerator<ProviderChunk> {
+        const endpointMode = req.endpoint_mode ?? 'auto';
+
+        if (endpointMode === 'chat') {
+            yield* this.streamChat(req);
+            return;
+        }
+
+        if (endpointMode === 'completions') {
+            yield* this.streamCompletions(req);
+            return;
+        }
+
         try {
-            const stream = await this.client.chat.completions.create({
-                model: req.model,
-                messages: req.messages as OpenAI.ChatCompletionMessageParam[],
-                temperature: req.temperature,
-                max_tokens: req.max_tokens,
-                stream: true,
-                stream_options: { include_usage: true },
-            });
-
-            let emittedStart = false;
-
-            for await (const chunk of stream) {
-                if (!emittedStart) {
-                    yield { type: 'message_start', id: chunk.id };
-                    emittedStart = true;
-                }
-
-                const delta = chunk.choices[0]?.delta?.content;
-                if (delta) {
-                    yield { type: 'delta', text: delta };
-                }
-
-                const finishReason = chunk.choices[0]?.finish_reason;
-                if (finishReason) {
-                    yield { type: 'message_end', finish_reason: finishReason };
-                }
-
-                if (chunk.usage) {
-                    yield {
-                        type: 'usage',
-                        input_tokens: chunk.usage.prompt_tokens,
-                        output_tokens: chunk.usage.completion_tokens,
-                    };
-                }
-            }
+            yield* this.streamChat(req);
             return;
         } catch (err) {
             if (!this.isChatUnsupportedError(err)) throw err;
+            yield* this.streamCompletions(req);
+        }
+    }
 
-            // Fallback for providers/models that only support /v1/completions streaming.
-            const stream = await this.client.completions.create({
-                model: req.model,
-                prompt: this.messagesToPrompt(req.messages),
-                temperature: req.temperature,
-                max_tokens: req.max_tokens,
-                stream: true,
-            });
+    private async invokeChat(req: NormalizedRequest): Promise<NormalizedResponse> {
+        const response = await this.client.chat.completions.create({
+            model: req.model,
+            messages: req.messages as OpenAI.ChatCompletionMessageParam[],
+            temperature: req.temperature,
+            max_tokens: req.max_tokens,
+            stream: false,
+        });
 
-            let emittedStart = false;
-            for await (const chunk of stream) {
-                if (!emittedStart) {
-                    yield { type: 'message_start', id: chunk.id };
-                    emittedStart = true;
-                }
+        const choice = response.choices[0];
+        if (!choice) throw new Error('OpenAI returned no choices');
 
-                const delta = chunk.choices[0]?.text;
-                if (delta) {
-                    yield { type: 'delta', text: delta };
-                }
+        return {
+            id: response.id,
+            content: choice.message.content ?? '',
+            finish_reason: choice.finish_reason ?? undefined,
+            input_tokens: response.usage?.prompt_tokens,
+            output_tokens: response.usage?.completion_tokens,
+        };
+    }
 
-                const finishReason = chunk.choices[0]?.finish_reason;
-                if (finishReason) {
-                    yield { type: 'message_end', finish_reason: finishReason };
-                }
+    private async invokeCompletions(req: NormalizedRequest): Promise<NormalizedResponse> {
+        const response = await this.client.completions.create({
+            model: req.model,
+            prompt: this.messagesToPrompt(req.messages),
+            temperature: req.temperature,
+            max_tokens: req.max_tokens,
+            stream: false,
+        });
+
+        const choice = response.choices[0];
+        if (!choice) throw new Error('OpenAI-compatible completions returned no choices');
+
+        return {
+            id: response.id,
+            content: choice.text ?? '',
+            finish_reason: choice.finish_reason ?? undefined,
+            input_tokens: response.usage?.prompt_tokens,
+            output_tokens: response.usage?.completion_tokens,
+        };
+    }
+
+    private async *streamChat(req: NormalizedRequest): AsyncGenerator<ProviderChunk> {
+        const stream = await this.client.chat.completions.create({
+            model: req.model,
+            messages: req.messages as OpenAI.ChatCompletionMessageParam[],
+            temperature: req.temperature,
+            max_tokens: req.max_tokens,
+            stream: true,
+            ...(this.name === 'openai' ? { stream_options: { include_usage: true } } : {}),
+        });
+
+        let emittedStart = false;
+
+        for await (const chunk of stream) {
+            if (!emittedStart) {
+                yield { type: 'message_start', id: chunk.id };
+                emittedStart = true;
+            }
+
+            const delta = chunk.choices[0]?.delta?.content;
+            if (delta) {
+                yield { type: 'delta', text: delta };
+            }
+
+            const finishReason = chunk.choices[0]?.finish_reason;
+            if (finishReason) {
+                yield { type: 'message_end', finish_reason: finishReason };
+            }
+
+            if (chunk.usage) {
+                yield {
+                    type: 'usage',
+                    input_tokens: chunk.usage.prompt_tokens,
+                    output_tokens: chunk.usage.completion_tokens,
+                };
+            }
+        }
+    }
+
+    private async *streamCompletions(req: NormalizedRequest): AsyncGenerator<ProviderChunk> {
+        const stream = await this.client.completions.create({
+            model: req.model,
+            prompt: this.messagesToPrompt(req.messages),
+            temperature: req.temperature,
+            max_tokens: req.max_tokens,
+            stream: true,
+        });
+
+        let emittedStart = false;
+        for await (const chunk of stream) {
+            if (!emittedStart) {
+                yield { type: 'message_start', id: chunk.id };
+                emittedStart = true;
+            }
+
+            const delta = chunk.choices[0]?.text;
+            if (delta) {
+                yield { type: 'delta', text: delta };
+            }
+
+            const finishReason = chunk.choices[0]?.finish_reason;
+            if (finishReason) {
+                yield { type: 'message_end', finish_reason: finishReason };
             }
         }
     }

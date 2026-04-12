@@ -4,6 +4,13 @@ export type ProviderTarget = {
     model: string;
     /** Relative weight for random selection. Must be a positive integer. */
     weight: number;
+    /**
+     * Optional endpoint override used by OpenAI-compatible adapters.
+     * - chat: force /v1/chat/completions
+     * - completions: force /v1/completions
+     * - auto: try chat first, then fallback to completions on compatibility errors
+     */
+    endpoint_mode?: 'chat' | 'completions' | 'auto';
 };
 
 export type RouteConfig = {
@@ -16,19 +23,27 @@ export type RouteConfig = {
 export const modelMap: Record<string, RouteConfig> = {
     // ── OpenAI ──────────────────────────────────────────────────────────────────
     'gpt-5.4': {
-        targets: [{ provider: 'openai', model: 'gpt-5.4', weight: 100 }],
+        targets: [{ provider: 'openai', model: 'gpt-5.4', weight: 100, endpoint_mode: 'chat' }],
         fallbacks: ['gpt-5.2-codex'],
     },
     'gpt-5.2-codex': {
-        targets: [{ provider: 'openai', model: 'gpt-5.2-codex', weight: 100 }],
+        targets: [{ provider: 'openai', model: 'gpt-5.2-codex', weight: 100, endpoint_mode: 'chat' }],
     },
 
     // ── OpenAI-compatible (Gemini via OpenAI-compatible API) ──────────────────
     'gemini-2.5-pro': {
-        targets: [{ provider: 'openai_compatible:gemini', model: 'gemini-2.5-pro', weight: 100 }],
+        targets: [{ provider: 'openai_compatible:gemini', model: 'gemini-2.5-pro', weight: 100, endpoint_mode: 'chat' }],
     },
     'gemini-2.5-flash': {
-        targets: [{ provider: 'openai_compatible:gemini', model: 'gemini-2.5-flash', weight: 100 }],
+        targets: [{ provider: 'openai_compatible:gemini', model: 'gemini-2.5-flash', weight: 100, endpoint_mode: 'chat' }],
+    },
+
+    // ── OpenAI-compatible (Vertex AI endpoint) ─────────────────────────────────
+    'vertex-gemini-2.5-pro': {
+        targets: [{ provider: 'openai_compatible:vertex', model: 'google/gemini-2.5-pro', weight: 100, endpoint_mode: 'chat' }],
+    },
+    'vertex-gemini-2.5-flash': {
+        targets: [{ provider: 'openai_compatible:vertex', model: 'google/gemini-2.5-flash', weight: 100, endpoint_mode: 'chat' }],
     },
 
     // ── Amazon Bedrock Nova ──────────────────────────────────────────────────────
@@ -53,7 +68,7 @@ export const modelMap: Record<string, RouteConfig> = {
     // ── Multi-provider aliases (weighted routing) ────────────────────────────────
     'fast': {
         targets: [
-            { provider: 'openai', model: 'gpt-5.2-codex', weight: 60 },
+            { provider: 'openai', model: 'gpt-5.2-codex', weight: 60, endpoint_mode: 'chat' },
             { provider: 'bedrock', model: 'amazon.nova-lite-v1:0', weight: 40 },
         ],
         fallbacks: ['gpt-5.2-codex'],
@@ -87,6 +102,7 @@ export const modelMap: Record<string, RouteConfig> = {
 export const publicAliases: string[] = [
     'gpt-5.4', 'gpt-5.2-codex',
     'gemini-2.5-pro', 'gemini-2.5-flash',
+    'vertex-gemini-2.5-pro', 'vertex-gemini-2.5-flash',
     'nova-lite', 'nova-pro', 'nova-micro',
     'claude-sonnet', 'claude-haiku',
     'fast', 'smart',

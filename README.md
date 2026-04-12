@@ -6,11 +6,11 @@ A serverless, OpenAI-compatible LLM gateway on AWS. Drop it in front of any LLM 
 
 - Accepts `POST /v1/chat/completions` with the same shape as the OpenAI API — stream or buffered
 - Routes the `"model"` alias to the correct provider/model (e.g. `"fast"` → 60% OpenAI `gpt-5.2-codex` / 40% Bedrock `nova-lite`)
-- Supports **OpenAI**, **AWS Bedrock** (Amazon Nova, Claude), **Anthropic**, and **OpenAI-compatible providers** (e.g. Gemini via OpenAI-compatible base URL)
+- Supports **OpenAI**, **AWS Bedrock** (Amazon Nova, Claude), **Anthropic**, and **OpenAI-compatible providers** (e.g. Gemini and Vertex)
 - Streams tokens back as SSE via AWS Lambda response streaming + API Gateway REST
 - **Rate limiting** — per-tenant per-minute and per-day request quotas backed by DynamoDB atomic counters
 - **Live routing config** — update model aliases in DynamoDB without redeploying
-- Automatically falls back to `/v1/completions` for models/providers that reject `/v1/chat/completions`
+- Per-target endpoint control via `endpoint_mode` (`chat`, `completions`, or `auto`) to avoid incompatible endpoint fallbacks
 - **Embeddings, images, and audio** — `POST /v1/embeddings`, `POST /v1/images/generations`, `POST /v1/audio/transcriptions`, `POST /v1/audio/speech`
 - Logs every request asynchronously (SQS → DynamoDB) — never on the hot path
 - Rejects unauthenticated requests at the **API Gateway layer** via a Lambda Authorizer, before your streaming Lambda ever runs
@@ -116,6 +116,11 @@ aws secretsmanager put-secret-value \
 aws secretsmanager put-secret-value \
   --secret-id /llm-gateway/gemini-api-key \
   --secret-string "AIza..."
+
+# Optional: Vertex credentials JSON for OpenAI-compatible Vertex routing
+aws secretsmanager put-secret-value \
+  --secret-id /llm-gateway/vertex-credentials-json \
+  --secret-string 'JSON_CREDENTIALS_CONTENT'
 
 # Bedrock uses the Lambda execution role — no key needed.
 # Ensure your AWS account has model access enabled in the Bedrock console.
@@ -335,7 +340,7 @@ aws dynamodb put-item \
   --item '{
     "alias":     {"S": "fast"},
     "targets":   {"L": [
-      {"M": {"provider":{"S":"bedrock"},"model":{"S":"amazon.nova-lite-v1:0"},"weight":{"N":"100"}}}
+      {"M": {"provider":{"S":"bedrock"},"model":{"S":"amazon.nova-lite-v1:0"},"weight":{"N":"100"},"endpoint_mode":{"S":"chat"}}}
     ]},
     "fallbacks": {"L": [{"S":"gpt-5.2-codex"}]},
     "enabled":   {"BOOL": true}
@@ -344,7 +349,7 @@ aws dynamodb put-item \
 
 Changes are picked up within **5 minutes** (in-memory cache TTL). Set `enabled: false` to disable an alias.
 
-### OpenAI-compatible providers (Gemini and others)
+### OpenAI-compatible providers (Gemini, Vertex, and others)
 
 Use provider name format `openai_compatible:<profile>` in route targets. For example:
 
@@ -366,6 +371,33 @@ For Gemini, CDK sets:
 - `OPENAI_COMPAT_GEMINI_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai`
 - `OPENAI_COMPAT_GEMINI_SECRET_ARN=<gemini-secret-arn>`
 
+For Vertex, CDK sets:
+
+- `OPENAI_COMPAT_VERTEX_BASE_URL=https://us-central1-aiplatform.googleapis.com/v1/projects/YOUR_VERTEX_PROJECT/locations/us-central1/endpoints/openapi`
+- `OPENAI_COMPAT_VERTEX_CREDENTIALS_SECRET_ARN=<vertex-credentials-secret-arn>`
+
+Before using Vertex routes, replace `YOUR_VERTEX_PROJECT` in `OPENAI_COMPAT_VERTEX_BASE_URL` with your actual project ID.
+The Vertex credentials secret must contain Google credentials JSON (service account or compatible external account credentials), not a raw API key.
+
+### Endpoint mode (`endpoint_mode`)
+
+Each route target can include `endpoint_mode` to force chat vs completions behavior for OpenAI-compatible APIs:
+
+- `chat`: always call `/v1/chat/completions`
+- `completions`: always call `/v1/completions`
+- `auto`: try chat first, fallback to completions only on compatibility errors
+
+Example route target:
+
+```json
+{
+  "provider": "openai_compatible:gemini",
+  "model": "gemini-2.5-pro",
+  "weight": 100,
+  "endpoint_mode": "chat"
+}
+```
+
 ### Available aliases
 
 | Alias | Providers | Notes |
@@ -374,6 +406,8 @@ For Gemini, CDK sets:
 | `gpt-5.2-codex` | OpenAI | |
 | `gemini-2.5-pro` | OpenAI-compatible (Gemini) | Routed via `openai_compatible:gemini` |
 | `gemini-2.5-flash` | OpenAI-compatible (Gemini) | Routed via `openai_compatible:gemini` |
+| `vertex-gemini-2.5-pro` | OpenAI-compatible (Vertex) | Routed via `openai_compatible:vertex` |
+| `vertex-gemini-2.5-flash` | OpenAI-compatible (Vertex) | Routed via `openai_compatible:vertex` |
 | `nova-lite` | Bedrock | Amazon Nova Lite |
 | `nova-pro` | Bedrock | Amazon Nova Pro |
 | `nova-micro` | Bedrock | Amazon Nova Micro |

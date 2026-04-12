@@ -132,7 +132,11 @@ export const handler = awslambda.streamifyResponse(
                 const adapter = await getProviderAdapter(target.provider);
                 let usageAcc: { input_tokens?: number; output_tokens?: number } = {};
 
-                for await (const chunk of adapter.stream({ ...baseReq, model: target.model })) {
+                for await (const chunk of adapter.stream({
+                    ...baseReq,
+                    model: target.model,
+                    endpoint_mode: target.endpoint_mode,
+                })) {
                     if (ttfbMs === null) ttfbMs = elapsedMs(startMs);
                     usageAcc = mergeUsage(usageAcc, chunk);
                     const sse = formatSseChunk(chunk);
@@ -146,9 +150,9 @@ export const handler = awslambda.streamifyResponse(
                 // Non-streaming path: use routeWithFallback for resilience.
                 const { result, provider, providerModel } = await routeWithFallback(
                     validReq.model,
-                    async (prov, model) => {
+                    async (prov, model, endpointMode) => {
                         const adapter = await getProviderAdapter(prov);
-                        return adapter.invoke({ ...baseReq, model });
+                        return adapter.invoke({ ...baseReq, model, endpoint_mode: endpointMode });
                     },
                     routes,
                 );

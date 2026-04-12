@@ -16,7 +16,7 @@ let cacheExpiresAt = 0;
  *
  * DynamoDB item shape:
  *   alias  (String, PK) — "gpt-5.4", "fast", …
- *   targets (List)      — [{ provider, model, weight }, …]
+ *   targets (List)      — [{ provider, model, weight, endpoint_mode? }, …]
  *   fallbacks (List?)   — ["gpt-5.2-codex", …]
  *   enabled  (Boolean?) — omit or true to include; false to disable
  */

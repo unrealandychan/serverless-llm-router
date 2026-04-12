@@ -5,6 +5,11 @@ export type NormalizedRequest = {
     stream: boolean;
     temperature?: number;
     max_tokens?: number;
+    /**
+     * Optional endpoint strategy for OpenAI-compatible providers.
+     * If omitted, adapters use auto detection behavior.
+     */
+    endpoint_mode?: 'chat' | 'completions' | 'auto';
 };
 
 /** Internal normalized response from a non-streaming invocation. */

@@ -2,6 +2,26 @@
 
 Use this file as the running release note for each update.
 
+## [2026-04-12] - Endpoint-mode routing fix and Vertex support
+
+### Added
+- Vertex OpenAI-compatible profile support in CDK (`OPENAI_COMPAT_VERTEX_BASE_URL`, `OPENAI_COMPAT_VERTEX_CREDENTIALS_SECRET_ARN`) and credentials secret output.
+- New model aliases: `vertex-gemini-2.5-pro`, `vertex-gemini-2.5-flash`.
+- Route target metadata `endpoint_mode` to control `chat` vs `completions` behavior explicitly.
+
+### Changed
+- OpenAI adapter now respects explicit `endpoint_mode` and only uses chat→completions fallback in `auto` mode.
+- Streaming chat requests no longer send `stream_options` to non-OpenAI-compatible providers by default.
+
+### Fixed
+- Prevented incorrect fallback of `gpt-5.2-codex` to `/v1/completions` by pinning OpenAI aliases to chat endpoint mode.
+
+### Removed
+- 
+
+### Security
+- 
+
 ## [2026-04-12] - Fix the CORS probelm of the billing dashboard adding Gemini support
 
 ### Added
