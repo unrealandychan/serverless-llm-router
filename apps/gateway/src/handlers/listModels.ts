@@ -1,5 +1,6 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { loadRoutes } from '../config/routeLoader';
+import { CORS_HEADERS } from '../util/cors';
 
 export const handler = async (_event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
     const routes = await loadRoutes();
@@ -14,7 +15,7 @@ export const handler = async (_event: APIGatewayProxyEvent): Promise<APIGatewayP
 
     return {
         statusCode: 200,
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
         body: JSON.stringify({ object: 'list', data }),
     };
 };

@@ -2,6 +2,7 @@ import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { z } from 'zod';
 import { getOpenAIAdapter } from '../providers/registry';
 import { checkAndIncrementRateLimit, RateLimitError } from '../middleware/rateLimiter';
+import { CORS_HEADERS } from '../util/cors';
 
 const EmbeddingRequestSchema = z.object({
     input: z.union([z.string(), z.array(z.string())]),
@@ -14,7 +15,7 @@ const EmbeddingRequestSchema = z.object({
 function errResp(statusCode: number, message: string, type = 'invalid_request_error'): APIGatewayProxyResult {
     return {
         statusCode,
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
         body: JSON.stringify({ error: { message, type } }),
     };
 }
@@ -49,7 +50,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         const result = await adapter.embed(parsed.data);
         return {
             statusCode: 200,
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
             body: JSON.stringify(result),
         };
     } catch (err) {
