@@ -444,6 +444,31 @@ export class GatewayStack extends cdk.Stack {
             distributionPaths: ['/*'],
         });
 
+        // ─── API Gateway CORS Gateway Responses ───────────────────────────────────
+        // defaultCorsPreflightOptions covers OPTIONS preflight, but API Gateway's own
+        // error responses (e.g. 403 from the Lambda Authorizer, default 4xx/5xx) also
+        // need Access-Control-Allow-Origin so the browser can read error details.
+        // NOTE: CDK's GatewayResponse.responseHeaders uses Velocity Template Language
+        // (VTL) string literals, so values must be wrapped in single quotes (e.g. "'*'").
+        // This differs from the CORS_HEADERS constant used in Lambda responses.
+        const gatewayResponseTypes: apigw.ResponseType[] = [
+            apigw.ResponseType.ACCESS_DENIED,
+            apigw.ResponseType.UNAUTHORIZED,
+            apigw.ResponseType.DEFAULT_4XX,
+            apigw.ResponseType.DEFAULT_5XX,
+        ];
+        for (const responseType of gatewayResponseTypes) {
+            new apigw.GatewayResponse(this, `GatewayResponse${responseType.responseType}`, {
+                restApi: api,
+                type: responseType,
+                responseHeaders: {
+                    'Access-Control-Allow-Origin': "'*'",
+                    'Access-Control-Allow-Headers': "'Content-Type,Authorization'",
+                    'Access-Control-Allow-Methods': "'GET,POST,OPTIONS'",
+                },
+            });
+        }
+
         // ─── Outputs ──────────────────────────────────────────────────────────────
         new cdk.CfnOutput(this, 'ApiUrl', {
             value: api.url,

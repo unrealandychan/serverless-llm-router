@@ -11,6 +11,7 @@ import { checkAndIncrementRateLimit, RateLimitError } from '../middleware/rateLi
 import { generateRequestId } from '../util/ids';
 import { nowIso, elapsedMs } from '../util/time';
 import { toErrorResponse, GatewayError } from '../util/errors';
+import { CORS_HEADERS } from '../util/cors';
 
 function parseRequest(event: APIGatewayProxyEvent): ChatRequest {
     if (!event.body) {
@@ -82,6 +83,7 @@ export const handler = awslambda.streamifyResponse(
                 'Cache-Control': 'no-cache',
                 'X-Request-Id': requestId,
                 ...(isStream ? { 'X-Accel-Buffering': 'no' } : {}),
+                ...CORS_HEADERS,
             },
         });
 
