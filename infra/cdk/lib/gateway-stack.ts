@@ -235,6 +235,33 @@ export class GatewayStack extends cdk.Stack {
             }),
         );
 
+        // ─── Responses Lambda (streaming — OpenAI Responses API) ──────────────────
+        const responsesFn = new lambdaNodejs.NodejsFunction(this, 'Responses', {
+            ...nodejsFnProps,
+            functionName: 'llm-gateway-responses',
+            entry: path.join(GATEWAY_SRC, 'handlers/responses.ts'),
+            handler: 'handler',
+            memorySize: 512,
+            timeout: cdk.Duration.seconds(60),
+            environment: {
+                ...sharedRequestEnv,
+                AUDIT_QUEUE_URL: auditQueue.queueUrl,
+            },
+        });
+        auditQueue.grantSendMessages(responsesFn);
+        openAiSecret.grantRead(responsesFn);
+        anthropicSecret.grantRead(responsesFn);
+        geminiSecret.grantRead(responsesFn);
+        vertexSecret.grantRead(responsesFn);
+        routesTable.grantReadData(responsesFn);
+        rateLimitsTable.grantReadWriteData(responsesFn);
+        responsesFn.addToRolePolicy(
+            new iam.PolicyStatement({
+                actions: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream'],
+                resources: ['arn:aws:bedrock:*::foundation-model/*'],
+            }),
+        );
+
         // ─── Embeddings Lambda ────────────────────────────────────────────────────
         const embeddingsFn = new lambdaNodejs.NodejsFunction(this, 'Embeddings', {
             ...nodejsFnProps,
@@ -383,6 +410,49 @@ export class GatewayStack extends cdk.Stack {
             sourceArn: api.arnForExecuteApi('POST', '/v1/chat/completions', 'v1'),
         });
 
+        // ── POST /v1/responses (streaming — OpenAI Responses API) ────────────────
+
+        const responsesStreamingUri = cdk.Fn.join('', [
+            'arn:',
+            cdk.Aws.PARTITION,
+            ':apigateway:',
+            cdk.Aws.REGION,
+            ':lambda:path/2021-11-15/functions/',
+            responsesFn.functionArn,
+            '/response-streaming-invocations',
+        ]);
+
+        const responsesStreamIntegration = new apigw.Integration({
+            type: apigw.IntegrationType.AWS_PROXY,
+            integrationHttpMethod: 'POST',
+            uri: responsesStreamingUri,
+        });
+
+        const responsesMethod = v1.addResource('responses').addMethod('POST', responsesStreamIntegration, {
+            authorizer: tokenAuthorizer,
+            authorizationType: apigw.AuthorizationType.CUSTOM,
+            methodResponses: [
+                {
+                    statusCode: '200',
+                    responseParameters: {
+                        'method.response.header.Content-Type': true,
+                        'method.response.header.X-Request-Id': true,
+                    },
+                },
+            ],
+        });
+
+        // CFN escape hatch: set ResponseTransferMode=STREAM on the integration
+        const cfnResponsesMethod = responsesMethod.node.defaultChild as apigw.CfnMethod;
+        cfnResponsesMethod.addOverride('Properties.Integration.ResponseTransferMode', 'STREAM');
+
+        // Allow API Gateway to invoke the Responses Lambda via the streaming invocations path
+        responsesFn.addPermission('ApiGwStreamInvoke', {
+            principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+            action: 'lambda:InvokeFunction',
+            sourceArn: api.arnForExecuteApi('POST', '/v1/responses', 'v1'),
+        });
+
         // ── POST /v1/embeddings ───────────────────────────────────────────────────
         v1.addResource('embeddings').addMethod(
             'POST',
@@ -487,6 +557,11 @@ export class GatewayStack extends cdk.Stack {
         new cdk.CfnOutput(this, 'ChatEndpoint', {
             value: `${api.url}v1/chat/completions`,
             description: 'Chat completions endpoint',
+        });
+
+        new cdk.CfnOutput(this, 'ResponsesEndpoint', {
+            value: `${api.url}v1/responses`,
+            description: 'Responses API endpoint',
         });
 
         new cdk.CfnOutput(this, 'EmbeddingsEndpoint', {
