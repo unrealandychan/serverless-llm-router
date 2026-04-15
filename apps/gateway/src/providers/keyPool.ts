@@ -67,7 +67,8 @@ export function selectKey(poolId: string, keys: string[]): string {
 
     const current = poolCounters.get(poolId) ?? 0;
     const idx = current % keys.length;
-    poolCounters.set(poolId, current + 1);
+    // Store the next index modulo pool size to prevent unbounded counter growth.
+    poolCounters.set(poolId, (current + 1) % keys.length);
     return keys[idx];
 }
 

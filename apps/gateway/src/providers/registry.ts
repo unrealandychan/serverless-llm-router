@@ -140,6 +140,8 @@ export async function getProviderAdapter(provider: string): Promise<ProviderAdap
                         );
                     }
 
+                    // Vertex credentials are stored as a single JSON object (service account key),
+                    // not as a key pool.  parseKeyPool always returns at least one element.
                     const credentialsJson = (await fetchKeyPool(vertexSecretArn))[0];
                     const authHeaderProvider = createGoogleAuthHeaderProvider(credentialsJson);
                     adapter = new OpenAIAdapter('vertex-oauth', {
