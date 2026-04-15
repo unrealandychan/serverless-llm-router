@@ -4,21 +4,26 @@ import { ProviderAdapter } from './types';
 import { OpenAIAdapter } from './openai';
 import { BedrockAdapter } from './bedrock';
 import { AnthropicAdapter } from './anthropic';
+import { parseKeyPool, selectKey } from './keyPool';
 
 const sm = new SecretsManagerClient({});
-const secretCache = new Map<string, string>();
 
-async function fetchSecret(secretArn: string): Promise<string> {
-    const cached = secretCache.get(secretArn);
+// Cache of parsed key pools keyed by secret ARN.
+const keyPoolCache = new Map<string, string[]>();
+
+async function fetchKeyPool(secretArn: string): Promise<string[]> {
+    const cached = keyPoolCache.get(secretArn);
     if (cached) return cached;
 
     const response = await sm.send(new GetSecretValueCommand({ SecretId: secretArn }));
     if (!response.SecretString) throw new Error(`Secret ${secretArn} has no string value`);
 
-    secretCache.set(secretArn, response.SecretString);
-    return response.SecretString;
+    const pool = parseKeyPool(response.SecretString);
+    keyPoolCache.set(secretArn, pool);
+    return pool;
 }
 
+// Adapter cache for single-key providers (retains existing warm-Lambda behaviour).
 const adapterCache = new Map<string, ProviderAdapter>();
 
 function createGoogleAuthHeaderProvider(credentialsJson: string): () => Promise<string> {
@@ -43,33 +48,55 @@ function createGoogleAuthHeaderProvider(credentialsJson: string): () => Promise<
 }
 
 /**
- * Return a lazily-initialized, cached ProviderAdapter for the given provider name.
- * API keys are fetched once from Secrets Manager and cached in memory for the Lambda lifetime.
+ * Return a ProviderAdapter for the given provider name.
+ *
+ * When the provider's secret contains a single API key the adapter is cached
+ * across warm Lambda invocations (original behaviour).  When the secret holds a
+ * JSON array of keys a fresh adapter is created for every call so requests are
+ * spread across the key pool using round-robin selection.
+ *
+ * Key pool secret format (AWS Secrets Manager):
+ *   Single key : plain string, e.g.  `sk-abc123`
+ *   Key pool   : JSON array,  e.g.  `["sk-key1","sk-key2","sk-key3"]`
  */
 export async function getProviderAdapter(provider: string): Promise<ProviderAdapter> {
-    const existing = adapterCache.get(provider);
-    if (existing) return existing;
-
     let adapter: ProviderAdapter;
 
     switch (provider) {
         case 'openai': {
             const secretArn = process.env.OPENAI_SECRET_ARN;
             if (!secretArn) throw new Error('OPENAI_SECRET_ARN environment variable is not set');
-            const apiKey = await fetchSecret(secretArn);
-            adapter = new OpenAIAdapter(apiKey);
+            const keys = await fetchKeyPool(secretArn);
+            if (keys.length === 1) {
+                const cached = adapterCache.get(provider);
+                if (cached) return cached;
+                adapter = new OpenAIAdapter(keys[0]);
+                adapterCache.set(provider, adapter);
+            } else {
+                adapter = new OpenAIAdapter(selectKey(provider, keys));
+            }
             break;
         }
         case 'bedrock': {
-            // Bedrock uses the Lambda execution role — no API key needed
+            // Bedrock uses the Lambda execution role — no API key needed.
+            const cached = adapterCache.get(provider);
+            if (cached) return cached;
             adapter = new BedrockAdapter();
+            adapterCache.set(provider, adapter);
             break;
         }
         case 'anthropic': {
             const secretArn = process.env.ANTHROPIC_SECRET_ARN;
             if (!secretArn) throw new Error('ANTHROPIC_SECRET_ARN environment variable is not set');
-            const apiKey = await fetchSecret(secretArn);
-            adapter = new AnthropicAdapter(apiKey);
+            const keys = await fetchKeyPool(secretArn);
+            if (keys.length === 1) {
+                const cached = adapterCache.get(provider);
+                if (cached) return cached;
+                adapter = new AnthropicAdapter(keys[0]);
+                adapterCache.set(provider, adapter);
+            } else {
+                adapter = new AnthropicAdapter(selectKey(provider, keys));
+            }
             break;
         }
         default: {
@@ -99,7 +126,13 @@ export async function getProviderAdapter(provider: string): Promise<ProviderAdap
                 const credentialsSecretArn = process.env[credsSecretArnEnv];
 
                 if (!baseURL) throw new Error(`${baseUrlEnv} environment variable is not set`);
+
                 if (normalizedProfile === 'VERTEX') {
+                    // Vertex uses OAuth credentials JSON, not a plain API key.
+                    // Key pools are not applicable for Vertex — always cache the adapter.
+                    const cached = adapterCache.get(provider);
+                    if (cached) return cached;
+
                     const vertexSecretArn = credentialsSecretArn ?? secretArn;
                     if (!vertexSecretArn) {
                         throw new Error(
@@ -107,20 +140,28 @@ export async function getProviderAdapter(provider: string): Promise<ProviderAdap
                         );
                     }
 
-                    const credentialsJson = await fetchSecret(vertexSecretArn);
+                    const credentialsJson = (await fetchKeyPool(vertexSecretArn))[0];
                     const authHeaderProvider = createGoogleAuthHeaderProvider(credentialsJson);
                     adapter = new OpenAIAdapter('vertex-oauth', {
                         baseURL,
                         name: provider,
                         authHeaderProvider,
                     });
+                    adapterCache.set(provider, adapter);
                     break;
                 }
 
                 if (!secretArn) throw new Error(`${secretArnEnv} environment variable is not set`);
 
-                const apiKey = await fetchSecret(secretArn);
-                adapter = new OpenAIAdapter(apiKey, { baseURL, name: provider });
+                const keys = await fetchKeyPool(secretArn);
+                if (keys.length === 1) {
+                    const cached = adapterCache.get(provider);
+                    if (cached) return cached;
+                    adapter = new OpenAIAdapter(keys[0], { baseURL, name: provider });
+                    adapterCache.set(provider, adapter);
+                } else {
+                    adapter = new OpenAIAdapter(selectKey(provider, keys), { baseURL, name: provider });
+                }
                 break;
             }
 
@@ -128,7 +169,6 @@ export async function getProviderAdapter(provider: string): Promise<ProviderAdap
         }
     }
 
-    adapterCache.set(provider, adapter);
     return adapter;
 }
 
