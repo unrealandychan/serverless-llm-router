@@ -4,21 +4,26 @@ import { ProviderAdapter } from './types';
 import { OpenAIAdapter } from './openai';
 import { BedrockAdapter } from './bedrock';
 import { AnthropicAdapter } from './anthropic';
+import { parseKeyPool, selectKey } from './keyPool';
 
 const sm = new SecretsManagerClient({});
-const secretCache = new Map<string, string>();
 
-async function fetchSecret(secretArn: string): Promise<string> {
-    const cached = secretCache.get(secretArn);
+// Cache of parsed key pools keyed by secret ARN.
+const keyPoolCache = new Map<string, string[]>();
+
+async function fetchKeyPool(secretArn: string): Promise<string[]> {
+    const cached = keyPoolCache.get(secretArn);
     if (cached) return cached;
 
     const response = await sm.send(new GetSecretValueCommand({ SecretId: secretArn }));
     if (!response.SecretString) throw new Error(`Secret ${secretArn} has no string value`);
 
-    secretCache.set(secretArn, response.SecretString);
-    return response.SecretString;
+    const pool = parseKeyPool(response.SecretString);
+    keyPoolCache.set(secretArn, pool);
+    return pool;
 }
 
+// Adapter cache for single-key providers (retains existing warm-Lambda behaviour).
 const adapterCache = new Map<string, ProviderAdapter>();
 
 /**
@@ -66,18 +71,27 @@ function createGoogleAuthHeaderProvider(credentialsJson: string): () => Promise<
 }
 
 /**
- * Return a lazily-initialized, cached ProviderAdapter for the given provider name.
- * API keys are fetched once from Secrets Manager and cached in memory for the Lambda lifetime.
+ * Return a ProviderAdapter for the given provider name.
  *
- * When keyId is provided the registry looks up `<PROVIDER>_SECRET_ARN_<KEY_ID>` (e.g.
- * OPENAI_SECRET_ARN_ACCOUNT1) and caches the resulting adapter separately, enabling multiple
- * API keys per provider for load-balancing across accounts.
+ * Supports two complementary key-pool strategies that can be combined:
+ *
+ * 1. **Per-target key_id** (routing-level pool, from `ProviderTarget.key_id`):
+ *    When `keyId` is provided, the registry resolves `<PROVIDER>_SECRET_ARN_<KEY_ID>`
+ *    (e.g. `OPENAI_SECRET_ARN_ACCOUNT1`), enabling weighted or round-robin distribution
+ *    across accounts by defining multiple targets in the routing config.
+ *    Falls back to the default `<PROVIDER>_SECRET_ARN` when the key-specific variable is absent.
+ *
+ * 2. **JSON array secret** (secret-level pool):
+ *    A secret may hold a JSON array of API keys (`["sk-key1","sk-key2"]`).  The registry
+ *    selects a key via round-robin and creates a fresh adapter per call so requests are
+ *    spread across keys within the same ARN.  A plain string secret retains the existing
+ *    single-key, adapter-cached behaviour.
+ *
+ * Secret format (AWS Secrets Manager):
+ *   Single key : plain string  →  `sk-abc123`
+ *   Key pool   : JSON array    →  `["sk-key1","sk-key2","sk-key3"]`
  */
 export async function getProviderAdapter(provider: string, keyId?: string): Promise<ProviderAdapter> {
-    const cacheKey = keyId ? `${provider}:${keyId}` : provider;
-    const existing = adapterCache.get(cacheKey);
-    if (existing) return existing;
-
     let adapter: ProviderAdapter;
 
     switch (provider) {
@@ -87,13 +101,24 @@ export async function getProviderAdapter(provider: string, keyId?: string): Prom
                 const envName = keyId ? `OPENAI_SECRET_ARN_${normalizeKeyId(keyId)} (or OPENAI_SECRET_ARN)` : 'OPENAI_SECRET_ARN';
                 throw new Error(`${envName} environment variable is not set`);
             }
-            const apiKey = await fetchSecret(secretArn);
-            adapter = new OpenAIAdapter(apiKey);
+            const keys = await fetchKeyPool(secretArn);
+            const cacheKey = keyId ? `${provider}:${keyId}` : provider;
+            if (keys.length === 1) {
+                const cached = adapterCache.get(cacheKey);
+                if (cached) return cached;
+                adapter = new OpenAIAdapter(keys[0]);
+                adapterCache.set(cacheKey, adapter);
+            } else {
+                adapter = new OpenAIAdapter(selectKey(cacheKey, keys));
+            }
             break;
         }
         case 'bedrock': {
-            // Bedrock uses the Lambda execution role — no API key needed
+            // Bedrock uses the Lambda execution role — no API key needed.
+            const cached = adapterCache.get(provider);
+            if (cached) return cached;
             adapter = new BedrockAdapter();
+            adapterCache.set(provider, adapter);
             break;
         }
         case 'anthropic': {
@@ -102,8 +127,16 @@ export async function getProviderAdapter(provider: string, keyId?: string): Prom
                 const envName = keyId ? `ANTHROPIC_SECRET_ARN_${normalizeKeyId(keyId)} (or ANTHROPIC_SECRET_ARN)` : 'ANTHROPIC_SECRET_ARN';
                 throw new Error(`${envName} environment variable is not set`);
             }
-            const apiKey = await fetchSecret(secretArn);
-            adapter = new AnthropicAdapter(apiKey);
+            const keys = await fetchKeyPool(secretArn);
+            const cacheKey = keyId ? `${provider}:${keyId}` : provider;
+            if (keys.length === 1) {
+                const cached = adapterCache.get(cacheKey);
+                if (cached) return cached;
+                adapter = new AnthropicAdapter(keys[0]);
+                adapterCache.set(cacheKey, adapter);
+            } else {
+                adapter = new AnthropicAdapter(selectKey(cacheKey, keys));
+            }
             break;
         }
         default: {
@@ -134,7 +167,13 @@ export async function getProviderAdapter(provider: string, keyId?: string): Prom
                 const credentialsSecretArn = process.env[credsSecretArnEnv];
 
                 if (!baseURL) throw new Error(`${baseUrlEnv} environment variable is not set`);
+
                 if (normalizedProfile === 'VERTEX') {
+                    // Vertex uses OAuth credentials JSON, not a plain API key.
+                    // Key pools are not applicable for Vertex — always cache the adapter.
+                    const cached = adapterCache.get(provider);
+                    if (cached) return cached;
+
                     const vertexSecretArn = credentialsSecretArn ?? secretArn;
                     if (!vertexSecretArn) {
                         throw new Error(
@@ -142,13 +181,16 @@ export async function getProviderAdapter(provider: string, keyId?: string): Prom
                         );
                     }
 
-                    const credentialsJson = await fetchSecret(vertexSecretArn);
+                    // Vertex credentials are stored as a single JSON object (service account key),
+                    // not as a key pool.  parseKeyPool always returns at least one element.
+                    const credentialsJson = (await fetchKeyPool(vertexSecretArn))[0];
                     const authHeaderProvider = createGoogleAuthHeaderProvider(credentialsJson);
                     adapter = new OpenAIAdapter('vertex-oauth', {
                         baseURL,
                         name: provider,
                         authHeaderProvider,
                     });
+                    adapterCache.set(provider, adapter);
                     break;
                 }
 
@@ -157,8 +199,15 @@ export async function getProviderAdapter(provider: string, keyId?: string): Prom
                     throw new Error(`${envName} environment variable is not set`);
                 }
 
-                const apiKey = await fetchSecret(secretArn);
-                adapter = new OpenAIAdapter(apiKey, { baseURL, name: provider });
+                const keys = await fetchKeyPool(secretArn);
+                if (keys.length === 1) {
+                    const cached = adapterCache.get(provider);
+                    if (cached) return cached;
+                    adapter = new OpenAIAdapter(keys[0], { baseURL, name: provider });
+                    adapterCache.set(provider, adapter);
+                } else {
+                    adapter = new OpenAIAdapter(selectKey(provider, keys), { baseURL, name: provider });
+                }
                 break;
             }
 
@@ -166,7 +215,6 @@ export async function getProviderAdapter(provider: string, keyId?: string): Prom
         }
     }
 
-    adapterCache.set(cacheKey, adapter);
     return adapter;
 }
 
