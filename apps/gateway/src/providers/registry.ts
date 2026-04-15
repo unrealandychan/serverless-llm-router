@@ -21,6 +21,29 @@ async function fetchSecret(secretArn: string): Promise<string> {
 
 const adapterCache = new Map<string, ProviderAdapter>();
 
+/**
+ * Normalize a key_id string to an uppercase env-var-safe suffix.
+ * e.g. "account-1" → "ACCOUNT_1"
+ */
+function normalizeKeyId(keyId: string): string {
+    return keyId.toUpperCase().replace(/[^A-Z0-9]/g, '_');
+}
+
+/**
+ * Resolve the Secrets Manager ARN for a provider's API key.
+ * When keyId is provided, looks up `<BASE_ENV>_<KEY_ID>` first (e.g. OPENAI_SECRET_ARN_ACCOUNT1).
+ * Falls back to `<BASE_ENV>` for the default single-key case.
+ */
+function resolveSecretArn(baseEnv: string, keyId?: string): string | undefined {
+    if (keyId) {
+        const keySpecificEnv = `${baseEnv}_${normalizeKeyId(keyId)}`;
+        const keySpecificArn = process.env[keySpecificEnv];
+        if (keySpecificArn) return keySpecificArn;
+        // Fall through to base env if key-specific env is not set
+    }
+    return process.env[baseEnv];
+}
+
 function createGoogleAuthHeaderProvider(credentialsJson: string): () => Promise<string> {
     let parsed: Record<string, unknown>;
     try {
@@ -45,17 +68,25 @@ function createGoogleAuthHeaderProvider(credentialsJson: string): () => Promise<
 /**
  * Return a lazily-initialized, cached ProviderAdapter for the given provider name.
  * API keys are fetched once from Secrets Manager and cached in memory for the Lambda lifetime.
+ *
+ * When keyId is provided the registry looks up `<PROVIDER>_SECRET_ARN_<KEY_ID>` (e.g.
+ * OPENAI_SECRET_ARN_ACCOUNT1) and caches the resulting adapter separately, enabling multiple
+ * API keys per provider for load-balancing across accounts.
  */
-export async function getProviderAdapter(provider: string): Promise<ProviderAdapter> {
-    const existing = adapterCache.get(provider);
+export async function getProviderAdapter(provider: string, keyId?: string): Promise<ProviderAdapter> {
+    const cacheKey = keyId ? `${provider}:${keyId}` : provider;
+    const existing = adapterCache.get(cacheKey);
     if (existing) return existing;
 
     let adapter: ProviderAdapter;
 
     switch (provider) {
         case 'openai': {
-            const secretArn = process.env.OPENAI_SECRET_ARN;
-            if (!secretArn) throw new Error('OPENAI_SECRET_ARN environment variable is not set');
+            const secretArn = resolveSecretArn('OPENAI_SECRET_ARN', keyId);
+            if (!secretArn) {
+                const envName = keyId ? `OPENAI_SECRET_ARN_${normalizeKeyId(keyId)} (or OPENAI_SECRET_ARN)` : 'OPENAI_SECRET_ARN';
+                throw new Error(`${envName} environment variable is not set`);
+            }
             const apiKey = await fetchSecret(secretArn);
             adapter = new OpenAIAdapter(apiKey);
             break;
@@ -66,8 +97,11 @@ export async function getProviderAdapter(provider: string): Promise<ProviderAdap
             break;
         }
         case 'anthropic': {
-            const secretArn = process.env.ANTHROPIC_SECRET_ARN;
-            if (!secretArn) throw new Error('ANTHROPIC_SECRET_ARN environment variable is not set');
+            const secretArn = resolveSecretArn('ANTHROPIC_SECRET_ARN', keyId);
+            if (!secretArn) {
+                const envName = keyId ? `ANTHROPIC_SECRET_ARN_${normalizeKeyId(keyId)} (or ANTHROPIC_SECRET_ARN)` : 'ANTHROPIC_SECRET_ARN';
+                throw new Error(`${envName} environment variable is not set`);
+            }
             const apiKey = await fetchSecret(secretArn);
             adapter = new AnthropicAdapter(apiKey);
             break;
@@ -78,6 +112,7 @@ export async function getProviderAdapter(provider: string): Promise<ProviderAdap
             // env vars:
             //   OPENAI_COMPAT_<PROFILE>_BASE_URL
             //   OPENAI_COMPAT_<PROFILE>_SECRET_ARN
+            //   OPENAI_COMPAT_<PROFILE>_SECRET_ARN_<KEY_ID>  (multi-key pool)
             // Vertex profile also supports:
             //   OPENAI_COMPAT_VERTEX_CREDENTIALS_SECRET_ARN (preferred)
             if (provider.startsWith('openai_compatible:')) {
@@ -95,7 +130,7 @@ export async function getProviderAdapter(provider: string): Promise<ProviderAdap
                 const credsSecretArnEnv = `OPENAI_COMPAT_${normalizedProfile}_CREDENTIALS_SECRET_ARN`;
 
                 const baseURL = process.env[baseUrlEnv];
-                const secretArn = process.env[secretArnEnv];
+                const secretArn = resolveSecretArn(secretArnEnv, keyId);
                 const credentialsSecretArn = process.env[credsSecretArnEnv];
 
                 if (!baseURL) throw new Error(`${baseUrlEnv} environment variable is not set`);
@@ -117,7 +152,10 @@ export async function getProviderAdapter(provider: string): Promise<ProviderAdap
                     break;
                 }
 
-                if (!secretArn) throw new Error(`${secretArnEnv} environment variable is not set`);
+                if (!secretArn) {
+                    const envName = keyId ? `${secretArnEnv}_${normalizeKeyId(keyId)} (or ${secretArnEnv})` : secretArnEnv;
+                    throw new Error(`${envName} environment variable is not set`);
+                }
 
                 const apiKey = await fetchSecret(secretArn);
                 adapter = new OpenAIAdapter(apiKey, { baseURL, name: provider });
@@ -128,7 +166,7 @@ export async function getProviderAdapter(provider: string): Promise<ProviderAdap
         }
     }
 
-    adapterCache.set(provider, adapter);
+    adapterCache.set(cacheKey, adapter);
     return adapter;
 }
 

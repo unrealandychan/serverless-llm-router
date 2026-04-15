@@ -11,6 +11,18 @@ export type ProviderTarget = {
      * - auto: try chat first, then fallback to completions on compatibility errors
      */
     endpoint_mode?: 'chat' | 'completions' | 'auto';
+    /**
+     * Optional key identifier used to select a specific API key from a provider's key pool.
+     * When set, the registry looks up `<PROVIDER>_SECRET_ARN_<KEY_ID>` (uppercased, non-alphanumeric
+     * characters replaced with underscores) instead of the default `<PROVIDER>_SECRET_ARN`.
+     * Multiple targets with the same provider/model but different key_ids allow weighted or
+     * round-robin distribution of requests across multiple provider accounts.
+     *
+     * Example env vars for OpenAI:
+     *   OPENAI_SECRET_ARN_ACCOUNT1=arn:aws:secretsmanager:...
+     *   OPENAI_SECRET_ARN_ACCOUNT2=arn:aws:secretsmanager:...
+     */
+    key_id?: string;
 };
 
 export type RouteConfig = {

@@ -38,6 +38,7 @@ export type FallbackInvokeResult<T> = {
   provider: string;
   providerModel: string;
   endpointMode?: ProviderTarget['endpoint_mode'];
+  keyId?: string;
 };
 
 /**
@@ -47,7 +48,7 @@ export type FallbackInvokeResult<T> = {
  */
 export async function routeWithFallback<T>(
   alias: string,
-  invoke: (provider: string, providerModel: string, endpointMode?: ProviderTarget['endpoint_mode']) => Promise<T>,
+  invoke: (provider: string, providerModel: string, endpointMode?: ProviderTarget['endpoint_mode'], keyId?: string) => Promise<T>,
   config: Record<string, RouteConfig> = modelMap,
 ): Promise<FallbackInvokeResult<T>> {
   const queue: string[] = [alias];
@@ -63,12 +64,13 @@ export async function routeWithFallback<T>(
 
     const target = selectTarget(route.targets);
     try {
-      const result = await invoke(target.provider, target.model, target.endpoint_mode);
+      const result = await invoke(target.provider, target.model, target.endpoint_mode, target.key_id);
       return {
         result,
         provider: target.provider,
         providerModel: target.model,
         endpointMode: target.endpoint_mode,
+        keyId: target.key_id,
       };
     } catch (err) {
       if (isRetryableError(err) && route.fallbacks?.length) {
