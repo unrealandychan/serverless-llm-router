@@ -29,7 +29,7 @@ const testConfig: Record<string, RouteConfig> = {
             { provider: 'openai', model: 'gpt-5.4', weight: 50, key_id: 'account2' },
         ],
     },
-    // Weighted key pool: primary account gets 70 % of traffic
+    // Weighted key pool: primary account gets 70% of traffic
     'weighted-keys': {
         targets: [
             { provider: 'openai', model: 'gpt-5.4', weight: 70, key_id: 'primary' },

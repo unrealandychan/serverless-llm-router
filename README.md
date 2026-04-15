@@ -435,7 +435,7 @@ OPENAI_SECRET_ARN_ACCOUNT1=arn:aws:secretsmanager:us-east-1:111122223333:secret:
 OPENAI_SECRET_ARN_ACCOUNT2=arn:aws:secretsmanager:us-east-1:111122223333:secret:openai-key-account2
 ```
 
-**Example: weighted distribution (70 % primary / 30 % secondary)**
+**Example: weighted distribution (70% primary / 30% secondary)**
 
 ```json
 {
