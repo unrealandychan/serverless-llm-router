@@ -22,6 +22,20 @@ const testConfig: Record<string, RouteConfig> = {
         targets: [{ provider: 'openai', model: 'gpt-5.2-codex', weight: 100 }],
         fallbacks: ['cycle-a'],
     },
+    // Key-pool alias: two OpenAI accounts, equal weight
+    'multi-key': {
+        targets: [
+            { provider: 'openai', model: 'gpt-5.4', weight: 50, key_id: 'account1' },
+            { provider: 'openai', model: 'gpt-5.4', weight: 50, key_id: 'account2' },
+        ],
+    },
+    // Weighted key pool: primary account gets 70 % of traffic
+    'weighted-keys': {
+        targets: [
+            { provider: 'openai', model: 'gpt-5.4', weight: 70, key_id: 'primary' },
+            { provider: 'openai', model: 'gpt-5.4', weight: 30, key_id: 'secondary' },
+        ],
+    },
 };
 
 describe('resolveAlias', () => {
@@ -54,6 +68,27 @@ describe('selectTarget', () => {
 
     it('throws when targets list is empty', () => {
         expect(() => selectTarget([])).toThrow();
+    });
+
+    it('preserves key_id on the returned target', () => {
+        const targets = [
+            { provider: 'openai', model: 'gpt-5.4', weight: 100, key_id: 'account1' },
+        ];
+        expect(selectTarget(targets).key_id).toBe('account1');
+    });
+
+    it('returns targets with key_id from a multi-key pool', () => {
+        const targets = [
+            { provider: 'openai', model: 'gpt-5.4', weight: 50, key_id: 'account1' },
+            { provider: 'openai', model: 'gpt-5.4', weight: 50, key_id: 'account2' },
+        ];
+        const selectedKeyIds = new Set<string | undefined>();
+        for (let i = 0; i < 100; i++) {
+            selectedKeyIds.add(selectTarget(targets).key_id);
+        }
+        // Both accounts should be selected over 100 iterations
+        expect(selectedKeyIds).toContain('account1');
+        expect(selectedKeyIds).toContain('account2');
     });
 });
 
@@ -91,5 +126,32 @@ describe('routeWithFallback', () => {
         const invoke = vi.fn().mockRejectedValue(retryable);
         await expect(routeWithFallback('cycle-a', invoke, testConfig)).rejects.toThrow();
         expect(invoke.mock.calls.length).toBeLessThanOrEqual(4);
+    });
+
+    it('passes key_id from the selected target to the invoke callback', async () => {
+        const capturedKeyIds: (string | undefined)[] = [];
+        const invoke = vi.fn().mockImplementation((_prov, _model, _mode, keyId) => {
+            capturedKeyIds.push(keyId);
+            return Promise.resolve('ok');
+        });
+        await routeWithFallback('multi-key', invoke, testConfig);
+        expect(invoke).toHaveBeenCalledOnce();
+        expect(['account1', 'account2']).toContain(capturedKeyIds[0]);
+    });
+
+    it('includes keyId in the result from routeWithFallback', async () => {
+        const invoke = vi.fn().mockResolvedValue('ok');
+        const res = await routeWithFallback('multi-key', invoke, testConfig);
+        expect(['account1', 'account2']).toContain(res.keyId);
+    });
+
+    it('passes undefined key_id when no key_id is configured on the target', async () => {
+        const capturedKeyIds: (string | undefined)[] = [];
+        const invoke = vi.fn().mockImplementation((_prov, _model, _mode, keyId) => {
+            capturedKeyIds.push(keyId);
+            return Promise.resolve('ok');
+        });
+        await routeWithFallback('gpt-5.2-codex', invoke, testConfig);
+        expect(capturedKeyIds[0]).toBeUndefined();
     });
 });
