@@ -26,6 +26,29 @@ async function fetchKeyPool(secretArn: string): Promise<string[]> {
 // Adapter cache for single-key providers (retains existing warm-Lambda behaviour).
 const adapterCache = new Map<string, ProviderAdapter>();
 
+/**
+ * Normalize a key_id string to an uppercase env-var-safe suffix.
+ * e.g. "account-1" → "ACCOUNT_1"
+ */
+function normalizeKeyId(keyId: string): string {
+    return keyId.toUpperCase().replace(/[^A-Z0-9]/g, '_');
+}
+
+/**
+ * Resolve the Secrets Manager ARN for a provider's API key.
+ * When keyId is provided, looks up `<BASE_ENV>_<KEY_ID>` first (e.g. OPENAI_SECRET_ARN_ACCOUNT1).
+ * Falls back to `<BASE_ENV>` for the default single-key case.
+ */
+function resolveSecretArn(baseEnv: string, keyId?: string): string | undefined {
+    if (keyId) {
+        const keySpecificEnv = `${baseEnv}_${normalizeKeyId(keyId)}`;
+        const keySpecificArn = process.env[keySpecificEnv];
+        if (keySpecificArn) return keySpecificArn;
+        // Fall through to base env if key-specific env is not set
+    }
+    return process.env[baseEnv];
+}
+
 function createGoogleAuthHeaderProvider(credentialsJson: string): () => Promise<string> {
     let parsed: Record<string, unknown>;
     try {
@@ -50,30 +73,43 @@ function createGoogleAuthHeaderProvider(credentialsJson: string): () => Promise<
 /**
  * Return a ProviderAdapter for the given provider name.
  *
- * When the provider's secret contains a single API key the adapter is cached
- * across warm Lambda invocations (original behaviour).  When the secret holds a
- * JSON array of keys a fresh adapter is created for every call so requests are
- * spread across the key pool using round-robin selection.
+ * Supports two complementary key-pool strategies that can be combined:
  *
- * Key pool secret format (AWS Secrets Manager):
- *   Single key : plain string, e.g.  `sk-abc123`
- *   Key pool   : JSON array,  e.g.  `["sk-key1","sk-key2","sk-key3"]`
+ * 1. **Per-target key_id** (routing-level pool, from `ProviderTarget.key_id`):
+ *    When `keyId` is provided, the registry resolves `<PROVIDER>_SECRET_ARN_<KEY_ID>`
+ *    (e.g. `OPENAI_SECRET_ARN_ACCOUNT1`), enabling weighted or round-robin distribution
+ *    across accounts by defining multiple targets in the routing config.
+ *    Falls back to the default `<PROVIDER>_SECRET_ARN` when the key-specific variable is absent.
+ *
+ * 2. **JSON array secret** (secret-level pool):
+ *    A secret may hold a JSON array of API keys (`["sk-key1","sk-key2"]`).  The registry
+ *    selects a key via round-robin and creates a fresh adapter per call so requests are
+ *    spread across keys within the same ARN.  A plain string secret retains the existing
+ *    single-key, adapter-cached behaviour.
+ *
+ * Secret format (AWS Secrets Manager):
+ *   Single key : plain string  →  `sk-abc123`
+ *   Key pool   : JSON array    →  `["sk-key1","sk-key2","sk-key3"]`
  */
-export async function getProviderAdapter(provider: string): Promise<ProviderAdapter> {
+export async function getProviderAdapter(provider: string, keyId?: string): Promise<ProviderAdapter> {
     let adapter: ProviderAdapter;
 
     switch (provider) {
         case 'openai': {
-            const secretArn = process.env.OPENAI_SECRET_ARN;
-            if (!secretArn) throw new Error('OPENAI_SECRET_ARN environment variable is not set');
+            const secretArn = resolveSecretArn('OPENAI_SECRET_ARN', keyId);
+            if (!secretArn) {
+                const envName = keyId ? `OPENAI_SECRET_ARN_${normalizeKeyId(keyId)} (or OPENAI_SECRET_ARN)` : 'OPENAI_SECRET_ARN';
+                throw new Error(`${envName} environment variable is not set`);
+            }
             const keys = await fetchKeyPool(secretArn);
+            const cacheKey = keyId ? `${provider}:${keyId}` : provider;
             if (keys.length === 1) {
-                const cached = adapterCache.get(provider);
+                const cached = adapterCache.get(cacheKey);
                 if (cached) return cached;
                 adapter = new OpenAIAdapter(keys[0]);
-                adapterCache.set(provider, adapter);
+                adapterCache.set(cacheKey, adapter);
             } else {
-                adapter = new OpenAIAdapter(selectKey(provider, keys));
+                adapter = new OpenAIAdapter(selectKey(cacheKey, keys));
             }
             break;
         }
@@ -86,16 +122,20 @@ export async function getProviderAdapter(provider: string): Promise<ProviderAdap
             break;
         }
         case 'anthropic': {
-            const secretArn = process.env.ANTHROPIC_SECRET_ARN;
-            if (!secretArn) throw new Error('ANTHROPIC_SECRET_ARN environment variable is not set');
+            const secretArn = resolveSecretArn('ANTHROPIC_SECRET_ARN', keyId);
+            if (!secretArn) {
+                const envName = keyId ? `ANTHROPIC_SECRET_ARN_${normalizeKeyId(keyId)} (or ANTHROPIC_SECRET_ARN)` : 'ANTHROPIC_SECRET_ARN';
+                throw new Error(`${envName} environment variable is not set`);
+            }
             const keys = await fetchKeyPool(secretArn);
+            const cacheKey = keyId ? `${provider}:${keyId}` : provider;
             if (keys.length === 1) {
-                const cached = adapterCache.get(provider);
+                const cached = adapterCache.get(cacheKey);
                 if (cached) return cached;
                 adapter = new AnthropicAdapter(keys[0]);
-                adapterCache.set(provider, adapter);
+                adapterCache.set(cacheKey, adapter);
             } else {
-                adapter = new AnthropicAdapter(selectKey(provider, keys));
+                adapter = new AnthropicAdapter(selectKey(cacheKey, keys));
             }
             break;
         }
@@ -105,6 +145,7 @@ export async function getProviderAdapter(provider: string): Promise<ProviderAdap
             // env vars:
             //   OPENAI_COMPAT_<PROFILE>_BASE_URL
             //   OPENAI_COMPAT_<PROFILE>_SECRET_ARN
+            //   OPENAI_COMPAT_<PROFILE>_SECRET_ARN_<KEY_ID>  (multi-key pool)
             // Vertex profile also supports:
             //   OPENAI_COMPAT_VERTEX_CREDENTIALS_SECRET_ARN (preferred)
             if (provider.startsWith('openai_compatible:')) {
@@ -122,7 +163,7 @@ export async function getProviderAdapter(provider: string): Promise<ProviderAdap
                 const credsSecretArnEnv = `OPENAI_COMPAT_${normalizedProfile}_CREDENTIALS_SECRET_ARN`;
 
                 const baseURL = process.env[baseUrlEnv];
-                const secretArn = process.env[secretArnEnv];
+                const secretArn = resolveSecretArn(secretArnEnv, keyId);
                 const credentialsSecretArn = process.env[credsSecretArnEnv];
 
                 if (!baseURL) throw new Error(`${baseUrlEnv} environment variable is not set`);
@@ -153,7 +194,10 @@ export async function getProviderAdapter(provider: string): Promise<ProviderAdap
                     break;
                 }
 
-                if (!secretArn) throw new Error(`${secretArnEnv} environment variable is not set`);
+                if (!secretArn) {
+                    const envName = keyId ? `${secretArnEnv}_${normalizeKeyId(keyId)} (or ${secretArnEnv})` : secretArnEnv;
+                    throw new Error(`${envName} environment variable is not set`);
+                }
 
                 const keys = await fetchKeyPool(secretArn);
                 if (keys.length === 1) {

@@ -25,29 +25,33 @@ const poolCounters = new Map<string, number>();
  */
 export function parseKeyPool(secretValue: string): string[] {
     const trimmed = secretValue.trim();
-    if (!trimmed) throw new Error('API key secret is empty');
+    if (!trimmed) throw new Error('Secret value is empty');
 
-    // Attempt JSON array parse only when the value looks like an array.
+    // Attempt JSON array parse when the value looks like a JSON array.
+    // Values that start with '[' are treated as intended JSON arrays; malformed JSON
+    // in this case throws a clear error rather than silently falling back to a plain-key
+    // interpretation (which would mask configuration mistakes).
     if (trimmed.startsWith('[')) {
+        let parsed: unknown;
         try {
-            const parsed = JSON.parse(trimmed) as unknown;
-            if (
-                Array.isArray(parsed) &&
-                parsed.length > 0 &&
-                parsed.every((k) => typeof k === 'string' && k.trim().length > 0)
-            ) {
-                return parsed.map((k) => (k as string).trim());
-            }
+            parsed = JSON.parse(trimmed);
+        } catch {
             throw new Error(
-                'Key pool secret must be a non-empty JSON array of non-empty strings',
+                'Secret value starts with "[" but is not valid JSON. ' +
+                'Key pool secrets must be a JSON array of strings (e.g. ["key1","key2"]), ' +
+                'or a plain string for a single key.',
             );
-        } catch (err) {
-            // Re-throw meaningful errors from our own validation above.
-            if (err instanceof Error && err.message.startsWith('Key pool secret')) {
-                throw err;
-            }
-            // JSON parse error — fall through and treat as a plain key.
         }
+        if (
+            Array.isArray(parsed) &&
+            parsed.length > 0 &&
+            parsed.every((k) => typeof k === 'string' && k.trim().length > 0)
+        ) {
+            return parsed.map((k) => (k as string).trim());
+        }
+        throw new Error(
+            'Key pool secret must be a non-empty JSON array of non-empty strings',
+        );
     }
 
     return [trimmed];

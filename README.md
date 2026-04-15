@@ -11,6 +11,7 @@ A serverless, OpenAI-compatible LLM gateway on AWS. Drop it in front of any LLM 
 - **Rate limiting** — per-tenant per-minute and per-day request quotas backed by DynamoDB atomic counters
 - **Live routing config** — update model aliases in DynamoDB without redeploying
 - Per-target endpoint control via `endpoint_mode` (`chat`, `completions`, or `auto`) to avoid incompatible endpoint fallbacks
+- **Provider key pools** — multiple API keys per provider (e.g. 2+ OpenAI accounts) with weighted or equal distribution across requests via `key_id`
 - **Embeddings, images, and audio** — `POST /v1/embeddings`, `POST /v1/images/generations`, `POST /v1/audio/transcriptions`, `POST /v1/audio/speech`
 - Logs every request asynchronously (SQS → DynamoDB) — never on the hot path
 - Rejects unauthenticated requests at the **API Gateway layer** via a Lambda Authorizer, before your streaming Lambda ever runs
@@ -397,6 +398,57 @@ Example route target:
   "endpoint_mode": "chat"
 }
 ```
+
+### Provider key pools (`key_id`)
+
+Each route target can include an optional `key_id` to select a specific API key from a pool of credentials for that provider. This allows you to distribute traffic across multiple provider accounts — useful for sharing token quotas across organizational accounts.
+
+**How it works**
+
+When a target has `"key_id": "account1"`, the gateway looks up the environment variable `<PROVIDER>_SECRET_ARN_<KEY_ID>` (uppercased, non-alphanumeric characters replaced with `_`) instead of the default `<PROVIDER>_SECRET_ARN`. If the key-specific variable is not set it falls back to the default.
+
+| `key_id` value | Env var resolved |
+|----------------|-----------------|
+| _(not set)_ | `OPENAI_SECRET_ARN` |
+| `"account1"` | `OPENAI_SECRET_ARN_ACCOUNT1` → fallback `OPENAI_SECRET_ARN` |
+| `"account-2"` | `OPENAI_SECRET_ARN_ACCOUNT_2` → fallback `OPENAI_SECRET_ARN` |
+
+The same naming convention applies to all providers: `ANTHROPIC_SECRET_ARN_<KEY_ID>`, `OPENAI_COMPAT_GEMINI_SECRET_ARN_<KEY_ID>`, etc.
+
+**Example: equal distribution across two OpenAI accounts**
+
+```json
+{
+  "gpt-5.4": {
+    "targets": [
+      { "provider": "openai", "model": "gpt-5.4", "weight": 50, "key_id": "account1" },
+      { "provider": "openai", "model": "gpt-5.4", "weight": 50, "key_id": "account2" }
+    ]
+  }
+}
+```
+
+Set environment variables pointing to separate Secrets Manager ARNs:
+
+```
+OPENAI_SECRET_ARN_ACCOUNT1=arn:aws:secretsmanager:us-east-1:111122223333:secret:openai-key-account1
+OPENAI_SECRET_ARN_ACCOUNT2=arn:aws:secretsmanager:us-east-1:111122223333:secret:openai-key-account2
+```
+
+**Example: weighted distribution (70% primary / 30% secondary)**
+
+```json
+{
+  "gpt-5.4": {
+    "targets": [
+      { "provider": "openai", "model": "gpt-5.4", "weight": 70, "key_id": "primary" },
+      { "provider": "openai", "model": "gpt-5.4", "weight": 30, "key_id": "secondary" }
+    ]
+  }
+}
+```
+
+The same target can also combine key pools with multi-provider routing — each entry in `targets` independently specifies its `provider`, `model`, `weight`, and optional `key_id`.
 
 ### Available aliases
 

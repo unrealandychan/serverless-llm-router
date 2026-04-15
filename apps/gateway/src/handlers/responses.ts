@@ -135,7 +135,7 @@ export const handler = awslambda.streamifyResponse(
                 resolvedProvider = target.provider;
                 resolvedModel = target.model;
 
-                const adapter = await getProviderAdapter(target.provider);
+                const adapter = await getProviderAdapter(target.provider, target.key_id);
                 let usageAcc: { input_tokens?: number; output_tokens?: number } = {};
                 let fullText = '';
                 let msgId = '';
@@ -208,8 +208,8 @@ export const handler = awslambda.streamifyResponse(
             } else {
                 const { result, provider, providerModel } = await routeWithFallback(
                     validReq.model,
-                    async (prov, model, endpointMode) => {
-                        const adapter = await getProviderAdapter(prov);
+                    async (prov, model, endpointMode, keyId) => {
+                        const adapter = await getProviderAdapter(prov, keyId);
                         return adapter.invoke({ ...baseReq, model, endpoint_mode: endpointMode });
                     },
                     routes,

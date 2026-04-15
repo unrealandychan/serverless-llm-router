@@ -31,8 +31,8 @@ describe('parseKeyPool', () => {
     });
 
     it('throws on an empty string', () => {
-        expect(() => parseKeyPool('')).toThrow('empty');
-        expect(() => parseKeyPool('   ')).toThrow('empty');
+        expect(() => parseKeyPool('')).toThrow('Secret value is empty');
+        expect(() => parseKeyPool('   ')).toThrow('Secret value is empty');
     });
 
     it('throws on a JSON array that contains non-strings', () => {
@@ -47,10 +47,10 @@ describe('parseKeyPool', () => {
         expect(() => parseKeyPool('[]')).toThrow();
     });
 
-    it('treats malformed JSON starting with "[" as a plain key', () => {
-        // A value that starts with '[' but is not valid JSON should be treated as a plain key.
-        const result = parseKeyPool('[not-valid-json');
-        expect(result).toEqual(['[not-valid-json']);
+    it('throws on malformed JSON starting with "["', () => {
+        // A value that starts with '[' but is not valid JSON should throw a clear error,
+        // not silently fall through to a plain-key interpretation.
+        expect(() => parseKeyPool('[not-valid-json')).toThrow(/starts with "\[" but is not valid JSON/);
     });
 });
 
