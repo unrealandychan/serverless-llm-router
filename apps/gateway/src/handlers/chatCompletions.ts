@@ -116,7 +116,10 @@ export const handler = awslambda.streamifyResponse(
 
         try {
             const baseReq: Omit<NormalizedRequest, 'model'> = {
-                messages: validReq.messages,
+                messages: validReq.messages.map((m) => ({
+                    ...m,
+                    role: m.role === 'developer' ? 'system' : m.role,
+                })),
                 stream: validReq.stream,
                 temperature: validReq.temperature,
                 max_tokens: validReq.max_tokens,

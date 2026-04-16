@@ -2,6 +2,17 @@
 
 Use this file as the running release note for each update.
 
+## [2026-04-16] - Accept OpenAI `developer` role in chat completions
+
+### Fixed
+- Gateway now accepts messages with `role: "developer"` (introduced in OpenAI o-series/gpt-5 models) instead of rejecting them with HTTP 400. The role is normalized to `system` before forwarding to downstream providers that do not support it.
+
+### Changed
+- `ChatMessageSchema` enum extended to include `'developer'`.
+- `chatCompletions` handler maps `developer` → `system` when building the normalized request.
+
+---
+
 ## [2026-04-15] - Provider key pool support with round-robin load balancing
 
 ### Added
