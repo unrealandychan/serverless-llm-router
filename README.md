@@ -12,6 +12,7 @@ A serverless, OpenAI-compatible LLM gateway on AWS. Drop it in front of any LLM 
 - **Live routing config** — update model aliases in DynamoDB without redeploying
 - Per-target endpoint control via `endpoint_mode` (`chat`, `completions`, or `auto`) to avoid incompatible endpoint fallbacks
 - **Provider key pools** — multiple API keys per provider (e.g. 2+ OpenAI accounts) with weighted or equal distribution across requests via `key_id`
+- **OpenAI Responses API** — `POST /v1/responses` with full streaming SSE event sequence (`response.created`, `response.output_text.delta`, `response.completed`, etc.)
 - **Embeddings, images, and audio** — `POST /v1/embeddings`, `POST /v1/images/generations`, `POST /v1/audio/transcriptions`, `POST /v1/audio/speech`
 - Logs every request asynchronously (SQS → DynamoDB) — never on the hot path
 - Rejects unauthenticated requests at the **API Gateway layer** via a Lambda Authorizer, before your streaming Lambda ever runs
@@ -64,7 +65,7 @@ apps/
   gateway/
     src/
       auth/          keyStore.ts — API key validation against Secrets Manager
-      handlers/      chatCompletions.ts, listModels.ts, authorizer.ts
+      handlers/      chatCompletions.ts, responses.ts, listModels.ts, authorizer.ts
                      embeddings.ts, imageGenerations.ts
                      audioTranscriptions.ts, audioSpeech.ts
                      billingUsage.ts
@@ -210,6 +211,19 @@ curl \
   -H "Authorization: Bearer gw_sk_changeme" \
   https://<api-id>.execute-api.<region>.amazonaws.com/v1/models
 ```
+
+### Responses API — streaming
+
+```bash
+curl -N \
+  -H "Authorization: Bearer gw_sk_changeme" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"fast","input":"Tell me a joke","stream":true}' \
+  https://<api-id>.execute-api.<region>.amazonaws.com/v1/responses
+```
+
+The response follows the OpenAI Responses API SSE event sequence:
+`response.created` → `response.in_progress` → `response.output_item.added` → `response.output_text.delta` (×N) → `response.output_text.done` → `response.completed`
 
 ### Billing usage
 
@@ -450,6 +464,18 @@ OPENAI_SECRET_ARN_ACCOUNT2=arn:aws:secretsmanager:us-east-1:111122223333:secret:
 
 The same target can also combine key pools with multi-provider routing — each entry in `targets` independently specifies its `provider`, `model`, `weight`, and optional `key_id`.
 
+**Option 2 — JSON-array secret (round-robin within a single secret)**
+
+Store a JSON array of keys inside one Secrets Manager secret. The gateway parses the array and selects the next key via round-robin on every request (counter persists across warm Lambda invocations):
+
+```bash
+aws secretsmanager put-secret-value \
+  --secret-id /llm-gateway/openai-api-key \
+  --secret-string '["sk-key1","sk-key2","sk-key3"]'
+```
+
+No `key_id` or extra env variables are needed — the default `OPENAI_SECRET_ARN` (or any other provider ARN) just points to the array secret. This approach is simpler when you only need to pool keys for a single provider without weighted routing across accounts.
+
 ### Available aliases
 
 | Alias | Providers | Notes |
@@ -500,6 +526,6 @@ npm run lint        # tsc --noEmit type check
 
 ## Roadmap
 
-- **Phase 3**: Per-tenant CloudWatch EMF metrics, DLQ replay tool, model alias allowlist per tenant, prompt/response logging opt-in, provider key pools (for example multiple OpenAI keys) with per-request key selection to balance usage across accounts
+- **Phase 3**: Per-tenant CloudWatch EMF metrics, DLQ replay tool, model alias allowlist per tenant, prompt/response logging opt-in
 
 See [plan/phases.md](plan/phases.md) for the full roadmap.

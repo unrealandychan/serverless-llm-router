@@ -2,6 +2,31 @@
 
 Use this file as the running release note for each update.
 
+## [2026-04-15] - Provider key pool support with round-robin load balancing
+
+### Added
+- `src/providers/keyPool.ts` — `parseKeyPool()` parses a secret as either a plain string key or a JSON array of keys (backward-compatible); `selectKey()` performs stateful round-robin selection across warm Lambda invocations.
+- JSON-array key pool support: store `["sk-key1","sk-key2"]` in a single Secrets Manager secret ARN for automatic round-robin distribution with no extra env vars required.
+- Per-target `key_id` field on `ProviderTarget` for routing-level key selection (resolves `<PROVIDER>_SECRET_ARN_<KEY_ID>` env var, falls back to default ARN).
+- Registry key pool cache (`keyPoolCache`) per ARN to avoid repeated secret parses.
+
+### Changed
+- For multi-key pool providers (OpenAI, Anthropic, `openai_compatible:*`), adapter cache is bypassed and a fresh adapter is instantiated per call so the round-robin counter is respected.
+- `routeWithFallback` propagates `key_id` through to `getProviderAdapter`.
+- Single-key providers and Bedrock/Vertex (IAM/OAuth) are unaffected.
+
+---
+
+## [2026-04-12] - OpenAI Responses API support (POST /v1/responses)
+
+### Added
+- `src/core/responses.ts` — pure utilities: `ResponsesRequestSchema` (Zod), `inputToMessages()`, `buildResponseBody()`, `formatResponseSseEvent()`.
+- `src/handlers/responses.ts` — streaming Lambda handler (`awslambda.streamifyResponse`) emitting the full Responses API SSE sequence: `response.created` → `response.in_progress` → `response.output_item.added` → `response.output_text.delta` (×N) → `response.output_text.done` → `response.completed`.
+- CDK: new `responsesFn` Lambda, API Gateway `POST /v1/responses` route with `ResponseTransferMode=STREAM`, and `ResponsesEndpoint` stack output.
+- 17 unit tests in `src/__tests__/responses.test.ts` covering schema validation, `inputToMessages` edge cases, response body structure, and SSE framing.
+
+---
+
 ## [2026-04-12] - Adding more plan details and fixing some errors
 ### Added
 - Example request and response formats for both streaming and non-streaming modes.
