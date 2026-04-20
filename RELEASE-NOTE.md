@@ -2,6 +2,22 @@
 
 Use this file as the running release note for each update.
 
+## [2026-04-20] - Tool/function-calling support for agent compatibility
+
+### Added
+- **`tools` and `tool_choice` support** on both `POST /v1/chat/completions` and `POST /v1/responses` endpoints. Agent frameworks (OpenAI Agents SDK, LangChain, AutoGen, etc.) that rely on function/tool calling now work correctly.
+- `parallel_tool_calls` field accepted on both endpoints and forwarded to the provider.
+- `tool_call_id` and `name` optional fields on `ChatMessageSchema` to support tool-result messages (`role: "tool"`) in conversation history.
+- `ToolDefinition` and `ToolCall` types in `providers/types.ts`; `tool_calls` field added to `NormalizedResponse`; new `tool_call` variant added to `ProviderChunk`.
+- `OpenAIAdapter`: `invokeChat()` passes tools to the OpenAI API and extracts `tool_calls` from the response; `streamChat()` passes tools, accumulates streamed tool-call argument deltas, filters incomplete entries, and emits a consolidated `tool_call` SSE event at stream end.
+- `formatSseChunk` handles the new `tool_call` chunk type — emits `event: tool_call`.
+- 13 new unit tests covering schema validation (`ChatRequestSchema` tools, `ResponsesRequestSchema` tools) and `formatSseChunk` tool_call formatting.
+
+### Fixed
+- Previously, `tools` sent by agent clients were silently stripped by Zod (not in the schema), so LLMs never received tool definitions and never returned tool calls. The `chatCompletions` handler now returns `content: null` and includes `tool_calls` in the response message when the model chose a tool.
+
+---
+
 ## [2026-04-16] - Accept OpenAI `developer` role in chat completions
 
 ### Fixed

@@ -201,7 +201,8 @@ export class OpenAIAdapter implements ProviderAdapter, EmbeddingAdapter, ImageGe
                     }
                     const acc = toolCallAcc[tc.index];
                     if (tc.id) acc.id = tc.id;
-                    if (tc.function?.name) acc.function.name += tc.function.name;
+                    // Name arrives once as a complete value; use assignment to avoid duplicates.
+                    if (tc.function?.name) acc.function.name = tc.function.name;
                     if (tc.function?.arguments) acc.function.arguments += tc.function.arguments;
                 }
             }
@@ -220,8 +221,10 @@ export class OpenAIAdapter implements ProviderAdapter, EmbeddingAdapter, ImageGe
             }
         }
 
-        // Emit accumulated tool calls as a single event after the stream ends.
-        const toolCalls = Object.values(toolCallAcc);
+        // Emit only tool calls that have a valid ID and function name.
+        const toolCalls = Object.values(toolCallAcc).filter(
+            (tc) => tc.id !== '' && tc.function.name !== '',
+        );
         if (toolCalls.length > 0) {
             yield { type: 'tool_call', tool_calls: toolCalls };
         }

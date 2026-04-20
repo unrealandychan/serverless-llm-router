@@ -180,8 +180,8 @@ export const handler = awslambda.streamifyResponse(
                             index: 0,
                             message: {
                                 role: 'assistant',
-                                content: result.tool_calls?.length ? null : result.content,
-                                ...(result.tool_calls?.length ? { tool_calls: result.tool_calls } : {}),
+                                content: result.tool_calls !== undefined ? null : result.content,
+                                ...(result.tool_calls !== undefined ? { tool_calls: result.tool_calls } : {}),
                             },
                             finish_reason: result.finish_reason ?? 'stop',
                         },
