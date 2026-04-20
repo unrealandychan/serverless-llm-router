@@ -1,11 +1,21 @@
 import { z } from 'zod';
 
+const ToolCallSchema = z.object({
+    id: z.string(),
+    type: z.literal('function'),
+    function: z.object({
+        name: z.string(),
+        arguments: z.string(),
+    }),
+});
+
 export const ChatMessageSchema = z.object({
     role: z.enum(['system', 'user', 'assistant', 'tool', 'developer']),
-    content: z.string(),
+    content: z.string().nullable(),
     // Tool result fields (when role === 'tool')
     tool_call_id: z.string().optional(),
     // Tool call fields (when role === 'assistant' with tool calls)
+    tool_calls: z.array(ToolCallSchema).optional(),
     name: z.string().optional(),
 });
 
