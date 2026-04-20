@@ -68,3 +68,19 @@ describe('mergeUsage', () => {
         expect(result.output_tokens).toBe(0);
     });
 });
+
+describe('formatSseChunk — tool_call', () => {
+    it('formats a tool_call chunk with assembled tool calls', () => {
+        const chunk: ProviderChunk = {
+            type: 'tool_call',
+            tool_calls: [
+                { id: 'call_abc', type: 'function', function: { name: 'get_weather', arguments: '{"location":"NYC"}' } },
+            ],
+        };
+        const result = formatSseChunk(chunk);
+        expect(result).toContain('event: tool_call\n');
+        expect(result).toContain('"tool_calls"');
+        expect(result).toContain('"get_weather"');
+        expect(result.endsWith('\n\n')).toBe(true);
+    });
+});

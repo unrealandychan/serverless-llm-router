@@ -17,6 +17,8 @@ export function formatSseChunk(chunk: ProviderChunk): string {
                 input_tokens: chunk.input_tokens,
                 output_tokens: chunk.output_tokens,
             })}\n\n`;
+        case 'tool_call':
+            return `event: tool_call\ndata: ${JSON.stringify({ tool_calls: chunk.tool_calls })}\n\n`;
         default:
             return '';
     }

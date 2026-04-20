@@ -1,7 +1,28 @@
+/** A single tool / function definition forwarded to the provider. */
+export type ToolDefinition = {
+    type: 'function';
+    function: {
+        name: string;
+        description?: string;
+        parameters?: Record<string, unknown>;
+        strict?: boolean;
+    };
+};
+
+/** Represents a tool call returned by the model. */
+export type ToolCall = {
+    id: string;
+    type: 'function';
+    function: {
+        name: string;
+        arguments: string;
+    };
+};
+
 /** Internal normalized request passed to every provider adapter. */
 export type NormalizedRequest = {
     model: string;
-    messages: Array<{ role: string; content: string }>;
+    messages: Array<{ role: string; content: string; tool_call_id?: string; name?: string }>;
     stream: boolean;
     temperature?: number;
     max_tokens?: number;
@@ -10,6 +31,12 @@ export type NormalizedRequest = {
      * If omitted, adapters use auto detection behavior.
      */
     endpoint_mode?: 'chat' | 'completions' | 'auto';
+    /** Tool definitions for function/tool calling. */
+    tools?: ToolDefinition[];
+    /** Controls which tool the model calls. */
+    tool_choice?: 'none' | 'auto' | 'required' | { type: 'function'; function: { name: string } };
+    /** Whether the model may call multiple tools in parallel. */
+    parallel_tool_calls?: boolean;
 };
 
 /** Internal normalized response from a non-streaming invocation. */
@@ -19,6 +46,8 @@ export type NormalizedResponse = {
     finish_reason?: string;
     input_tokens?: number;
     output_tokens?: number;
+    /** Tool calls requested by the model, if any. */
+    tool_calls?: ToolCall[];
 };
 
 /** Tagged union of events emitted by a streaming provider adapter. */
@@ -26,7 +55,8 @@ export type ProviderChunk =
     | { type: 'message_start'; id: string }
     | { type: 'delta'; text: string }
     | { type: 'message_end'; finish_reason?: string }
-    | { type: 'usage'; input_tokens?: number; output_tokens?: number };
+    | { type: 'usage'; input_tokens?: number; output_tokens?: number }
+    | { type: 'tool_call'; tool_calls: ToolCall[] };
 
 /** Contract every provider adapter must implement. */
 export interface ProviderAdapter {
