@@ -175,3 +175,57 @@ describe('formatResponseSseEvent', () => {
         expect(frame.endsWith('\n\n')).toBe(true);
     });
 });
+
+describe('ResponsesRequestSchema — tools', () => {
+    it('accepts a tools array with function definitions', () => {
+        const result = ResponsesRequestSchema.safeParse({
+            model: 'gpt-4o',
+            input: 'What is the weather?',
+            tools: [
+                {
+                    type: 'function',
+                    function: {
+                        name: 'get_weather',
+                        description: 'Get weather for a location',
+                        parameters: { type: 'object', properties: { location: { type: 'string' } } },
+                    },
+                },
+            ],
+        });
+        expect(result.success).toBe(true);
+        if (result.success) {
+            expect(result.data.tools).toHaveLength(1);
+            expect(result.data.tools![0].function.name).toBe('get_weather');
+        }
+    });
+
+    it('accepts tool_choice as a string literal', () => {
+        const result = ResponsesRequestSchema.safeParse({
+            model: 'gpt-4o',
+            input: 'Hello',
+            tool_choice: 'auto',
+        });
+        expect(result.success).toBe(true);
+    });
+
+    it('accepts tool_choice as a function object', () => {
+        const result = ResponsesRequestSchema.safeParse({
+            model: 'gpt-4o',
+            input: 'Hello',
+            tool_choice: { type: 'function', function: { name: 'my_tool' } },
+        });
+        expect(result.success).toBe(true);
+        if (result.success) {
+            expect(result.data.tool_choice).toEqual({ type: 'function', function: { name: 'my_tool' } });
+        }
+    });
+
+    it('accepts parallel_tool_calls', () => {
+        const result = ResponsesRequestSchema.safeParse({
+            model: 'gpt-4o',
+            input: 'Hello',
+            parallel_tool_calls: false,
+        });
+        expect(result.success).toBe(true);
+    });
+});

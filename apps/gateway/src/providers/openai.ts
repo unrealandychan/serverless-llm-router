@@ -104,10 +104,23 @@ export class OpenAIAdapter implements ProviderAdapter, EmbeddingAdapter, ImageGe
             temperature: req.temperature,
             max_tokens: req.max_tokens,
             stream: false,
+            ...(req.tools ? { tools: req.tools as OpenAI.ChatCompletionTool[] } : {}),
+            ...(req.tool_choice !== undefined
+                ? { tool_choice: req.tool_choice as OpenAI.ChatCompletionToolChoiceOption }
+                : {}),
+            ...(req.parallel_tool_calls !== undefined
+                ? { parallel_tool_calls: req.parallel_tool_calls }
+                : {}),
         });
 
         const choice = response.choices[0];
         if (!choice) throw new Error('OpenAI returned no choices');
+
+        const toolCalls = choice.message.tool_calls?.map((tc) => ({
+            id: tc.id,
+            type: 'function' as const,
+            function: { name: tc.function.name, arguments: tc.function.arguments },
+        }));
 
         return {
             id: response.id,
@@ -115,6 +128,7 @@ export class OpenAIAdapter implements ProviderAdapter, EmbeddingAdapter, ImageGe
             finish_reason: choice.finish_reason ?? undefined,
             input_tokens: response.usage?.prompt_tokens,
             output_tokens: response.usage?.completion_tokens,
+            ...(toolCalls?.length ? { tool_calls: toolCalls } : {}),
         };
     }
 
@@ -147,9 +161,21 @@ export class OpenAIAdapter implements ProviderAdapter, EmbeddingAdapter, ImageGe
             max_tokens: req.max_tokens,
             stream: true,
             ...(this.name === 'openai' ? { stream_options: { include_usage: true } } : {}),
+            ...(req.tools ? { tools: req.tools as OpenAI.ChatCompletionTool[] } : {}),
+            ...(req.tool_choice !== undefined
+                ? { tool_choice: req.tool_choice as OpenAI.ChatCompletionToolChoiceOption }
+                : {}),
+            ...(req.parallel_tool_calls !== undefined
+                ? { parallel_tool_calls: req.parallel_tool_calls }
+                : {}),
         });
 
         let emittedStart = false;
+        // Accumulate tool call deltas keyed by index so we can emit them at the end.
+        const toolCallAcc: Record<
+            number,
+            { id: string; type: 'function'; function: { name: string; arguments: string } }
+        > = {};
 
         for await (const chunk of stream) {
             if (!emittedStart) {
@@ -160,6 +186,24 @@ export class OpenAIAdapter implements ProviderAdapter, EmbeddingAdapter, ImageGe
             const delta = chunk.choices[0]?.delta?.content;
             if (delta) {
                 yield { type: 'delta', text: delta };
+            }
+
+            // Accumulate tool call argument deltas.
+            const tcDeltas = chunk.choices[0]?.delta?.tool_calls;
+            if (tcDeltas) {
+                for (const tc of tcDeltas) {
+                    if (!(tc.index in toolCallAcc)) {
+                        toolCallAcc[tc.index] = {
+                            id: tc.id ?? '',
+                            type: 'function',
+                            function: { name: tc.function?.name ?? '', arguments: '' },
+                        };
+                    }
+                    const acc = toolCallAcc[tc.index];
+                    if (tc.id) acc.id = tc.id;
+                    if (tc.function?.name) acc.function.name += tc.function.name;
+                    if (tc.function?.arguments) acc.function.arguments += tc.function.arguments;
+                }
             }
 
             const finishReason = chunk.choices[0]?.finish_reason;
@@ -174,6 +218,12 @@ export class OpenAIAdapter implements ProviderAdapter, EmbeddingAdapter, ImageGe
                     output_tokens: chunk.usage.completion_tokens,
                 };
             }
+        }
+
+        // Emit accumulated tool calls as a single event after the stream ends.
+        const toolCalls = Object.values(toolCallAcc);
+        if (toolCalls.length > 0) {
+            yield { type: 'tool_call', tool_calls: toolCalls };
         }
     }
 

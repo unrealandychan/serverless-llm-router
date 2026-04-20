@@ -123,6 +123,9 @@ export const handler = awslambda.streamifyResponse(
             stream: validReq.stream,
             temperature: validReq.temperature,
             max_tokens: validReq.max_output_tokens,
+            ...(validReq.tools ? { tools: validReq.tools } : {}),
+            ...(validReq.tool_choice !== undefined ? { tool_choice: validReq.tool_choice } : {}),
+            ...(validReq.parallel_tool_calls !== undefined ? { parallel_tool_calls: validReq.parallel_tool_calls } : {}),
         };
 
         try {
