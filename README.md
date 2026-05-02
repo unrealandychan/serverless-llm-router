@@ -1,3 +1,15 @@
+<div align="center">
+
+<img src="https://capsule-render.vercel.app/api?type=waving&color=gradient&customColorList=6,11,20&height=180&section=header&text=serverless-llm-router&fontSize=42&fontColor=ffffff&fontAlignY=38&desc=OpenAI-compatible%20LLM%20gateway%20on%20AWS%20%E2%80%94%20zero%20servers%2C%20infinite%20scale&descAlignY=58&descSize=15" alt="Header"/>
+
+[![Stars](https://img.shields.io/github/stars/unrealandychan/serverless-llm-router?style=for-the-badge&logo=github&color=f78166&logoColor=white&labelColor=0d1117)](https://github.com/unrealandychan/serverless-llm-router/stargazers)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6?style=for-the-badge&logo=typescript&logoColor=white&labelColor=0d1117)](https://www.typescriptlang.org/)
+[![AWS CDK](https://img.shields.io/badge/AWS_CDK-Serverless-FF9900?style=for-the-badge&logo=amazon-aws&logoColor=white&labelColor=0d1117)](https://aws.amazon.com/cdk/)
+[![Node.js](https://img.shields.io/badge/Node.js-20.x-339933?style=for-the-badge&logo=node.js&logoColor=white&labelColor=0d1117)](https://nodejs.org/)
+[![License](https://img.shields.io/github/license/unrealandychan/serverless-llm-router?style=for-the-badge&labelColor=0d1117&color=79c0ff)](LICENSE)
+
+</div>
+
 # Serverless LLM Router
 
 A serverless, OpenAI-compatible LLM gateway on AWS. Drop it in front of any LLM provider and get streaming responses, multi-provider routing, rate limiting, and async request logging — all without managing servers.
@@ -28,7 +40,7 @@ Client
   │  POST /v1/chat/completions   (or /embeddings, /images/generations, /audio/*, /billing/usage)
   │  POST /v1/rag/ingest         (embed documents → S3 Vectors)
   │  POST /v1/rag/query          (embed query → S3 Vectors → LLM → streaming response)
-  │  Authorization: Bearer gw_sk_...
+  │  Authorization: Bearer ***
   ▼
 API Gateway REST API
   │  Lambda Authorizer validates key → 403 or Allow + tenantId
@@ -156,7 +168,7 @@ Note: Use the exact endpoint outputs (`ChatEndpoint`, `EmbeddingsEndpoint`, `Bil
 
 ```bash
 curl -N \
-  -H "Authorization: Bearer gw_sk_changeme" \
+  -H "Authorization: Bearer *** \
   -H "Content-Type: application/json" \
   -d '{"model":"fast","messages":[{"role":"user","content":"Hello"}],"stream":true}' \
   https://<api-id>.execute-api.<region>.amazonaws.com/v1/chat/completions
@@ -166,7 +178,7 @@ curl -N \
 
 ```bash
 curl \
-  -H "Authorization: Bearer gw_sk_changeme" \
+  -H "Authorization: Bearer *** \
   -H "Content-Type: application/json" \
   -d '{"model":"smart","messages":[{"role":"user","content":"Hello"}],"stream":false}' \
   https://<api-id>.execute-api.<region>.amazonaws.com/v1/chat/completions
@@ -176,7 +188,7 @@ curl \
 
 ```bash
 curl \
-  -H "Authorization: Bearer gw_sk_changeme" \
+  -H "Authorization: Bearer *** \
   -H "Content-Type: application/json" \
   -d '{"model":"text-embedding-3-small","input":"The quick brown fox"}' \
   https://<api-id>.execute-api.<region>.amazonaws.com/v1/embeddings
@@ -186,7 +198,7 @@ curl \
 
 ```bash
 curl \
-  -H "Authorization: Bearer gw_sk_changeme" \
+  -H "Authorization: Bearer *** \
   -H "Content-Type: application/json" \
   -d '{"model":"dall-e-3","prompt":"A sunset over mountains","size":"1024x1024"}' \
   https://<api-id>.execute-api.<region>.amazonaws.com/v1/images/generations
@@ -198,7 +210,7 @@ curl \
 # Encode the audio file to base64 first, then send as JSON
 AUDIO_B64=$(base64 -i recording.mp3)
 curl \
-  -H "Authorization: Bearer gw_sk_changeme" \
+  -H "Authorization: Bearer *** \
   -H "Content-Type: application/json" \
   -d "{\"model\":\"whisper-1\",\"audio\":\"$AUDIO_B64\",\"filename\":\"recording.mp3\"}" \
   https://<api-id>.execute-api.<region>.amazonaws.com/v1/audio/transcriptions
@@ -208,7 +220,7 @@ curl \
 
 ```bash
 curl \
-  -H "Authorization: Bearer gw_sk_changeme" \
+  -H "Authorization: Bearer *** \
   -H "Content-Type: application/json" \
   -d '{"model":"tts-1","input":"Hello world","voice":"nova"}' \
   https://<api-id>.execute-api.<region>.amazonaws.com/v1/audio/speech
@@ -219,7 +231,7 @@ curl \
 
 ```bash
 curl \
-  -H "Authorization: Bearer gw_sk_changeme" \
+  -H "Authorization: Bearer *** \
   https://<api-id>.execute-api.<region>.amazonaws.com/v1/models
 ```
 
@@ -227,7 +239,7 @@ curl \
 
 ```bash
 curl -N \
-  -H "Authorization: Bearer gw_sk_changeme" \
+  -H "Authorization: Bearer *** \
   -H "Content-Type: application/json" \
   -d '{"model":"fast","input":"Tell me a joke","stream":true}' \
   https://<api-id>.execute-api.<region>.amazonaws.com/v1/responses
@@ -240,7 +252,7 @@ The response follows the OpenAI Responses API SSE event sequence:
 
 ```bash
 curl \
-  -H "Authorization: Bearer gw_sk_changeme" \
+  -H "Authorization: Bearer *** \
   "https://<api-id>.execute-api.<region>.amazonaws.com/v1/billing/usage?from=2026-04-01&to=2026-04-11"
 ```
 
@@ -252,7 +264,7 @@ The gateway uses an **API Gateway Lambda Authorizer** (TOKEN type).
 
 Every request must include:
 ```
-Authorization: Bearer <your-gateway-key>
+Authorization: Bearer <your-...key>
 ```
 
 **How it works:**
@@ -395,12 +407,12 @@ Environment variable convention:
 For Gemini, CDK sets:
 
 - `OPENAI_COMPAT_GEMINI_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai`
-- `OPENAI_COMPAT_GEMINI_SECRET_ARN=<gemini-secret-arn>`
+- `OPENAI_COMPAT_GEMINI_SECRET_ARN=<gemin...rn>`
 
 For Vertex, CDK sets:
 
 - `OPENAI_COMPAT_VERTEX_BASE_URL=https://us-central1-aiplatform.googleapis.com/v1/projects/YOUR_VERTEX_PROJECT/locations/us-central1/endpoints/openapi`
-- `OPENAI_COMPAT_VERTEX_CREDENTIALS_SECRET_ARN=<vertex-credentials-secret-arn>`
+- `OPENAI_COMPAT_VERTEX_CREDENTIALS_SECRET_ARN=<verte...rn>`
 
 Before using Vertex routes, replace `YOUR_VERTEX_PROJECT` in `OPENAI_COMPAT_VERTEX_BASE_URL` with your actual project ID.
 The Vertex credentials secret must contain Google credentials JSON (service account or compatible external account credentials), not a raw API key.
@@ -456,8 +468,8 @@ The same naming convention applies to all providers: `ANTHROPIC_SECRET_ARN_<KEY_
 Set environment variables pointing to separate Secrets Manager ARNs:
 
 ```
-OPENAI_SECRET_ARN_ACCOUNT1=arn:aws:secretsmanager:us-east-1:111122223333:secret:openai-key-account1
-OPENAI_SECRET_ARN_ACCOUNT2=arn:aws:secretsmanager:us-east-1:111122223333:secret:openai-key-account2
+OPENAI_SECRET_ARN_ACCOUNT1=arn:aw...unt1
+OPENAI_SECRET_ARN_ACCOUNT2=arn:aw...unt2
 ```
 
 **Example: weighted distribution (70% primary / 30% secondary)**

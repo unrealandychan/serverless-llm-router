@@ -123,6 +123,9 @@ export const handler = awslambda.streamifyResponse(
                 stream: validReq.stream,
                 temperature: validReq.temperature,
                 max_tokens: validReq.max_tokens,
+                ...(validReq.tools ? { tools: validReq.tools } : {}),
+                ...(validReq.tool_choice !== undefined ? { tool_choice: validReq.tool_choice } : {}),
+                ...(validReq.parallel_tool_calls !== undefined ? { parallel_tool_calls: validReq.parallel_tool_calls } : {}),
             };
 
             const routes = await loadRoutes();
@@ -175,7 +178,11 @@ export const handler = awslambda.streamifyResponse(
                     choices: [
                         {
                             index: 0,
-                            message: { role: 'assistant', content: result.content },
+                            message: {
+                                role: 'assistant',
+                                content: result.tool_calls !== undefined ? null : result.content,
+                                ...(result.tool_calls !== undefined ? { tool_calls: result.tool_calls } : {}),
+                            },
                             finish_reason: result.finish_reason ?? 'stop',
                         },
                     ],

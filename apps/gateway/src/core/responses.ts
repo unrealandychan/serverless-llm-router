@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { randomUUID } from 'crypto';
+import { ToolSchema } from './schemas';
 
 // ─── Zod schema ───────────────────────────────────────────────────────────────
 
@@ -14,6 +15,11 @@ const ResponseInputMessageSchema = z.object({
     content: z.union([z.string(), z.array(ContentPartSchema)]),
 });
 
+const ToolChoiceObjectSchema = z.object({
+    type: z.literal('function'),
+    function: z.object({ name: z.string() }),
+});
+
 export const ResponsesRequestSchema = z.object({
     model: z.string().min(1, 'model is required'),
     input: z.union([z.string(), z.array(ResponseInputMessageSchema)]),
@@ -23,6 +29,16 @@ export const ResponsesRequestSchema = z.object({
     stream: z.boolean().default(false),
     user: z.string().optional(),
     metadata: z.record(z.string()).optional(),
+    tools: z.array(ToolSchema).optional(),
+    tool_choice: z
+        .union([
+            z.literal('none'),
+            z.literal('auto'),
+            z.literal('required'),
+            ToolChoiceObjectSchema,
+        ])
+        .optional(),
+    parallel_tool_calls: z.boolean().optional(),
 });
 
 export type ResponsesRequest = z.infer<typeof ResponsesRequestSchema>;
