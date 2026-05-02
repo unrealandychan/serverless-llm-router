@@ -14,6 +14,7 @@ A serverless, OpenAI-compatible LLM gateway on AWS. Drop it in front of any LLM 
 - **Provider key pools** — multiple API keys per provider (e.g. 2+ OpenAI accounts) with weighted or equal distribution across requests via `key_id`
 - **OpenAI Responses API** — `POST /v1/responses` with full streaming SSE event sequence (`response.created`, `response.output_text.delta`, `response.completed`, etc.)
 - **Embeddings, images, and audio** — `POST /v1/embeddings`, `POST /v1/images/generations`, `POST /v1/audio/transcriptions`, `POST /v1/audio/speech`
+- **RAG (Retrieval Augmented Generation)** — `POST /v1/rag/ingest` to embed and store documents in **Amazon S3 Vectors**, and `POST /v1/rag/query` to retrieve context and stream grounded answers via any configured model alias
 - Logs every request asynchronously (SQS → DynamoDB) — never on the hot path
 - Rejects unauthenticated requests at the **API Gateway layer** via a Lambda Authorizer, before your streaming Lambda ever runs
 - **Billing dashboard** — S3 + CloudFront static site showing usage, token counts, and estimated cost per model
@@ -25,13 +26,15 @@ A serverless, OpenAI-compatible LLM gateway on AWS. Drop it in front of any LLM 
 ```
 Client
   │  POST /v1/chat/completions   (or /embeddings, /images/generations, /audio/*, /billing/usage)
+  │  POST /v1/rag/ingest         (embed documents → S3 Vectors)
+  │  POST /v1/rag/query          (embed query → S3 Vectors → LLM → streaming response)
   │  Authorization: Bearer gw_sk_...
   ▼
 API Gateway REST API
   │  Lambda Authorizer validates key → 403 or Allow + tenantId
   │  Rate limiter checks DynamoDB counters → 429 if quota exceeded
   ▼
-Handler Lambda (streaming for chat, standard for rest)
+Handler Lambda (streaming for chat/rag-query, standard for rest)
   │  Routes via alias → OpenAI / Bedrock (Nova, Claude) / Anthropic
   │  audit event → SQS (fire-and-forget)
   ▼
@@ -40,6 +43,10 @@ Log Consumer Lambda  →  DynamoDB llm_gateway_requests
                          DynamoDB llm_gateway_routes   ← live route config
                          DynamoDB llm_gateway_rate_limits ← quota counters
 
+RAG Ingest Lambda  →  OpenAI Embeddings API  →  S3 Vectors (PutVectors)
+RAG Query Lambda   →  OpenAI Embeddings API  →  S3 Vectors (QueryVectors)
+                   →  LLM Router  →  streaming SSE response
+
 Billing Dashboard (CloudFront + S3)  ←  GET /v1/billing/usage
 ```
 
@@ -47,11 +54,12 @@ Billing Dashboard (CloudFront + S3)  ←  GET /v1/billing/usage
 
 | Layer | Service |
 |-------|---------|
-| API | API Gateway REST API (response streaming for chat) |
+| API | API Gateway REST API (response streaming for chat/rag-query) |
 | Auth | Lambda Authorizer (TOKEN type, 5 min cache) |
 | Compute | Lambda Node.js 22 (ARM64) |
 | Queue | SQS Standard + DLQ |
 | Storage | DynamoDB (on-demand) — requests, routes, rate limits |
+| Vector Store | **Amazon S3 Vectors** — RAG document embeddings |
 | Secrets | AWS Secrets Manager |
 | Dashboard | S3 + CloudFront |
 | Metrics | CloudWatch |
@@ -69,6 +77,9 @@ apps/
                      embeddings.ts, imageGenerations.ts
                      audioTranscriptions.ts, audioSpeech.ts
                      billingUsage.ts
+                     ragIngest.ts, ragQuery.ts   ← RAG API handlers
+                     ragSetup.ts                 ← CDK custom resource (vector bucket init)
+      rag/           s3Vectors.ts               ← S3 Vectors client utility
       core/          router.ts, schemas.ts, stream.ts
       providers/     openai.ts, bedrock.ts, anthropic.ts, types.ts, registry.ts
       middleware/    rateLimiter.ts
@@ -497,6 +508,144 @@ No `key_id` or extra env variables are needed — the default `OPENAI_SECRET_ARN
 | `text-embedding-3-large` | OpenAI | Embeddings |
 | `dall-e-3` | OpenAI | Image generation |
 | `dall-e-2` | OpenAI | Image generation |
+
+## RAG (Retrieval Augmented Generation)
+
+The gateway includes a built-in RAG pipeline backed by **Amazon S3 Vectors** — the first cloud object store with native vector storage and sub-second similarity search.
+
+### How it works
+
+```
+POST /v1/rag/ingest           POST /v1/rag/query
+        │                             │
+  Embed documents              Embed user query
+  (OpenAI Embeddings)          (OpenAI Embeddings)
+        │                             │
+  PutVectors → S3 Vectors      QueryVectors ← S3 Vectors
+                                      │
+                               Augment system prompt
+                               with retrieved context
+                                      │
+                               Route to LLM (any alias)
+                                      │
+                               Streaming SSE response
+```
+
+### Ingest documents — `POST /v1/rag/ingest`
+
+```bash
+curl \
+  -H "Authorization: Bearer gw_sk_changeme" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "documents": [
+      {
+        "key": "doc-aws-lambda",
+        "text": "AWS Lambda is a serverless compute service that runs code without provisioning servers.",
+        "metadata": { "category": "compute", "source": "aws-docs" }
+      },
+      {
+        "key": "doc-s3-vectors",
+        "text": "Amazon S3 Vectors provides native vector storage with sub-second similarity search, reducing vector storage costs by up to 90%.",
+        "metadata": { "category": "storage", "source": "aws-docs" }
+      }
+    ]
+  }' \
+  https://<api-id>.execute-api.<region>.amazonaws.com/v1/rag/ingest
+```
+
+Response:
+```json
+{ "ingested": 2, "index_name": "rag-default" }
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `documents` | array (1–100) | required | Documents to embed and store |
+| `documents[].key` | string | required | Unique document identifier (used for upsert/delete) |
+| `documents[].text` | string | required | Source text to embed |
+| `documents[].metadata` | object | optional | Filterable key-value metadata |
+| `index_name` | string | `rag-default` | Target vector index |
+| `embedding_model` | string | `text-embedding-3-small` | OpenAI embedding model |
+
+### RAG query — `POST /v1/rag/query`
+
+```bash
+# Streaming (SSE)
+curl -N \
+  -H "Authorization: Bearer gw_sk_changeme" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "What is S3 Vectors and how does it reduce costs?",
+    "model": "fast",
+    "stream": true,
+    "top_k": 5
+  }' \
+  https://<api-id>.execute-api.<region>.amazonaws.com/v1/rag/query
+```
+
+```bash
+# Buffered (non-streaming)
+curl \
+  -H "Authorization: Bearer gw_sk_changeme" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "What is S3 Vectors and how does it reduce costs?",
+    "model": "smart",
+    "stream": false,
+    "top_k": 3,
+    "metadata_filter": { "category": "storage" }
+  }' \
+  https://<api-id>.execute-api.<region>.amazonaws.com/v1/rag/query
+```
+
+Non-streaming response includes `rag_context` showing which documents were retrieved:
+
+```json
+{
+  "id": "chatcmpl-...",
+  "object": "chat.completion",
+  "model": "smart",
+  "choices": [{ "message": { "role": "assistant", "content": "S3 Vectors provides..." } }],
+  "rag_context": [
+    { "key": "doc-s3-vectors", "distance": 0.12 },
+    { "key": "doc-aws-lambda", "distance": 0.87 }
+  ]
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `query` | string | required | User question |
+| `model` | string | required | Model alias for generation |
+| `stream` | boolean | `false` | Stream response as SSE |
+| `top_k` | integer (1–20) | `5` | Number of context chunks to retrieve |
+| `index_name` | string | `rag-default` | Vector index to search |
+| `system_prompt` | string | optional | Extra instructions appended after the retrieved context |
+| `metadata_filter` | object | optional | Filter retrieved chunks by metadata fields |
+| `embedding_model` | string | `text-embedding-3-small` | Must match the model used during ingest |
+| `temperature` | number | optional | Generation temperature |
+| `max_tokens` | integer | optional | Max output tokens |
+
+### Vector index configuration
+
+The CDK stack automatically provisions an S3 Vectors bucket and index on first deploy via a CloudFormation custom resource:
+
+| Parameter | Value |
+|-----------|-------|
+| Bucket name | `llm-gateway-rag-<account-id>` |
+| Index name | `rag-default` |
+| Dimensions | `1536` (matches `text-embedding-3-small`) |
+| Distance metric | `cosine` |
+| `source_text` metadata | non-filterable (stored but not indexed for filtering) |
+
+To use a different embedding model, update `RAG_EMBEDDING_MODEL` in the CDK stack and recreate the index with the correct dimension count. Supported OpenAI embedding models and their dimensions:
+
+| Model | Dimensions |
+|-------|-----------|
+| `text-embedding-3-small` | 1536 |
+| `text-embedding-3-large` | 3072 |
+| `text-embedding-ada-002` | 1536 |
 
 ---
 

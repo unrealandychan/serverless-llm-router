@@ -2,6 +2,22 @@
 
 Use this file as the running release note for each update.
 
+## [2026-05-02] - RAG support via Amazon S3 Vectors
+
+### Added
+- **`POST /v1/rag/ingest`** — accepts up to 100 documents per request, batch-embeds them using OpenAI Embeddings, and stores the resulting vectors (with `source_text` as non-filterable metadata) in an Amazon S3 Vectors index.
+- **`POST /v1/rag/query`** — full RAG pipeline: embeds the user query, retrieves the top-K nearest chunks from S3 Vectors (with optional metadata filtering), builds a grounded system prompt, then routes the augmented request through the existing LLM router. Supports both streaming (SSE) and buffered responses. Non-streaming responses include `rag_context` (key + distance per retrieved chunk) for source attribution.
+- **`src/rag/s3Vectors.ts`** — singleton `S3VectorsClient` wrapper exposing `putVectors`, `queryVectors`, and `deleteVectors`. Configured via `RAG_VECTOR_BUCKET_NAME`, `RAG_DEFAULT_INDEX_NAME`, and `RAG_EMBEDDING_MODEL` env vars.
+- **`src/handlers/ragSetup.ts`** — CDK custom resource Lambda that idempotently creates the S3 Vectors bucket (`llm-gateway-rag-<account-id>`) and index (`rag-default`, 1536 dims, cosine distance) on every `cdk deploy`.
+- **CDK stack** — `RagSetup` custom resource Lambda + Provider, `RagIngest` Lambda, `RagQuery` streaming Lambda, `POST /v1/rag/ingest` and `POST /v1/rag/query` API Gateway routes, IAM policies for `s3vectors:PutVectors`, `s3vectors:QueryVectors`, and provisioning actions. New stack outputs: `RagIngestEndpoint`, `RagQueryEndpoint`, `RagVectorBucketName`.
+
+### Changed
+- `apps/gateway/package.json` — `@aws-sdk/client-s3vectors` added to `dependencies` so it is bundled inside the RAG Lambda zips (the S3 Vectors client is not yet included in the Lambda Node.js 22 managed runtime).
+- CDK shared bundling props extended with a `ragBundling` override: lists only the well-known AWS SDK packages as external, allowing esbuild to bundle `@aws-sdk/client-s3vectors` without affecting other Lambdas.
+- Architecture diagram and Stack table in README updated to include S3 Vectors.
+
+---
+
 ## [2026-04-16] - Accept OpenAI `developer` role in chat completions
 
 ### Fixed

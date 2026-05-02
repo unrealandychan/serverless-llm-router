@@ -14,6 +14,7 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment';
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
+import * as cr from 'aws-cdk-lib/custom-resources';
 
 const GATEWAY_SRC = path.resolve(__dirname, '../../../apps/gateway/src');
 const DASHBOARD_DIR = path.resolve(__dirname, '../../../dashboard');
@@ -126,6 +127,23 @@ export class GatewayStack extends cdk.Stack {
                 NODE_OPTIONS: '--enable-source-maps',
             },
             logRetention: logs.RetentionDays.ONE_MONTH,
+        };
+
+        // Bundling override for RAG Lambdas: keep well-known @aws-sdk/* packages
+        // as external (they ship with the Lambda runtime) but intentionally omit
+        // @aws-sdk/client-s3vectors so esbuild bundles it from node_modules.
+        // This ensures the new S3 Vectors client is always available regardless
+        // of when the Lambda runtime is updated.
+        const ragBundling: lambdaNodejs.BundlingOptions = {
+            externalModules: [
+                '@aws-sdk/client-bedrock-runtime',
+                '@aws-sdk/client-dynamodb',
+                '@aws-sdk/client-secrets-manager',
+                '@aws-sdk/client-sqs',
+                '@aws-sdk/lib-dynamodb',
+            ],
+            sourceMap: true,
+            minify: false,
         };
 
         // Env vars common to all request-handling Lambdas
@@ -313,7 +331,106 @@ export class GatewayStack extends cdk.Stack {
         });
         openAiSecret.grantRead(audioSpeechFn);
         rateLimitsTable.grantReadWriteData(audioSpeechFn);
+        // ─── RAG — S3 Vectors provisioning ────────────────────────────────────────
+        // Vector bucket name includes the account ID to be globally unique.
+        const ragVectorBucketName = cdk.Fn.join('-', ['llm-gateway-rag', cdk.Aws.ACCOUNT_ID]);
+        const ragDefaultIndexName = 'rag-default';
 
+        // Custom resource Lambda: creates the vector bucket + index on first deploy.
+        // Uses ragBundling to bundle @aws-sdk/client-s3vectors inside the zip.
+        const ragSetupFn = new lambdaNodejs.NodejsFunction(this, 'RagSetup', {
+            ...nodejsFnProps,
+            functionName: 'llm-gateway-rag-setup',
+            entry: path.join(GATEWAY_SRC, 'handlers/ragSetup.ts'),
+            handler: 'handler',
+            memorySize: 256,
+            timeout: cdk.Duration.minutes(2),
+            bundling: ragBundling,
+        });
+
+        ragSetupFn.addToRolePolicy(
+            new iam.PolicyStatement({
+                actions: [
+                    's3vectors:CreateVectorBucket',
+                    's3vectors:DeleteVectorBucket',
+                    's3vectors:CreateIndex',
+                    's3vectors:DeleteIndex',
+                ],
+                resources: ['*'],
+            }),
+        );
+
+        const ragSetupProvider = new cr.Provider(this, 'RagSetupProvider', {
+            onEventHandler: ragSetupFn,
+        });
+
+        new cdk.CustomResource(this, 'RagVectorBucketResource', {
+            serviceToken: ragSetupProvider.serviceToken,
+            properties: {
+                VectorBucketName: ragVectorBucketName,
+                IndexName: ragDefaultIndexName,
+                Dimension: '1536',     // matches text-embedding-3-small
+                DistanceMetric: 'cosine',
+            },
+            removalPolicy: cdk.RemovalPolicy.RETAIN,
+        });
+
+        const ragEnv = {
+            RAG_VECTOR_BUCKET_NAME: ragVectorBucketName,
+            RAG_DEFAULT_INDEX_NAME: ragDefaultIndexName,
+            RAG_EMBEDDING_MODEL: 'text-embedding-3-small',
+        };
+
+        // ─── RAG Ingest Lambda ────────────────────────────────────────────────────
+        const ragIngestFn = new lambdaNodejs.NodejsFunction(this, 'RagIngest', {
+            ...nodejsFnProps,
+            functionName: 'llm-gateway-rag-ingest',
+            entry: path.join(GATEWAY_SRC, 'handlers/ragIngest.ts'),
+            handler: 'handler',
+            memorySize: 512,
+            timeout: cdk.Duration.seconds(60),
+            bundling: ragBundling,
+            environment: { ...sharedRequestEnv, ...ragEnv },
+        });
+        openAiSecret.grantRead(ragIngestFn);
+        rateLimitsTable.grantReadWriteData(ragIngestFn);
+        ragIngestFn.addToRolePolicy(
+            new iam.PolicyStatement({
+                actions: ['s3vectors:PutVectors'],
+                resources: ['*'],
+            }),
+        );
+
+        // ─── RAG Query Lambda (streaming) ─────────────────────────────────────────
+        const ragQueryFn = new lambdaNodejs.NodejsFunction(this, 'RagQuery', {
+            ...nodejsFnProps,
+            functionName: 'llm-gateway-rag-query',
+            entry: path.join(GATEWAY_SRC, 'handlers/ragQuery.ts'),
+            handler: 'handler',
+            memorySize: 512,
+            timeout: cdk.Duration.seconds(60),
+            bundling: ragBundling,
+            environment: { ...sharedRequestEnv, AUDIT_QUEUE_URL: auditQueue.queueUrl, ...ragEnv },
+        });
+        auditQueue.grantSendMessages(ragQueryFn);
+        openAiSecret.grantRead(ragQueryFn);
+        anthropicSecret.grantRead(ragQueryFn);
+        geminiSecret.grantRead(ragQueryFn);
+        vertexSecret.grantRead(ragQueryFn);
+        routesTable.grantReadData(ragQueryFn);
+        rateLimitsTable.grantReadWriteData(ragQueryFn);
+        ragQueryFn.addToRolePolicy(
+            new iam.PolicyStatement({
+                actions: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream'],
+                resources: ['arn:aws:bedrock:*::foundation-model/*'],
+            }),
+        );
+        ragQueryFn.addToRolePolicy(
+            new iam.PolicyStatement({
+                actions: ['s3vectors:QueryVectors'],
+                resources: ['*'],
+            }),
+        );
         // ─── Billing Usage Lambda ─────────────────────────────────────────────────
         const billingUsageFn = new lambdaNodejs.NodejsFunction(this, 'BillingUsage', {
             ...nodejsFnProps,
@@ -488,7 +605,57 @@ export class GatewayStack extends cdk.Stack {
             new apigw.LambdaIntegration(billingUsageFn),
             authOpts,
         );
+        // ── POST /v1/rag/ingest & POST /v1/rag/query ─────────────────────────────
+        const ragResource = v1.addResource('rag');
 
+        ragResource.addResource('ingest').addMethod(
+            'POST',
+            new apigw.LambdaIntegration(ragIngestFn),
+            authOpts,
+        );
+
+        const ragQueryStreamingUri = cdk.Fn.join('', [
+            'arn:',
+            cdk.Aws.PARTITION,
+            ':apigateway:',
+            cdk.Aws.REGION,
+            ':lambda:path/2021-11-15/functions/',
+            ragQueryFn.functionArn,
+            '/response-streaming-invocations',
+        ]);
+
+        const ragQueryStreamIntegration = new apigw.Integration({
+            type: apigw.IntegrationType.AWS_PROXY,
+            integrationHttpMethod: 'POST',
+            uri: ragQueryStreamingUri,
+        });
+
+        const ragQueryMethod = ragResource.addResource('query').addMethod(
+            'POST',
+            ragQueryStreamIntegration,
+            {
+                authorizer: tokenAuthorizer,
+                authorizationType: apigw.AuthorizationType.CUSTOM,
+                methodResponses: [
+                    {
+                        statusCode: '200',
+                        responseParameters: {
+                            'method.response.header.Content-Type': true,
+                            'method.response.header.X-Request-Id': true,
+                        },
+                    },
+                ],
+            },
+        );
+
+        const cfnRagQueryMethod = ragQueryMethod.node.defaultChild as apigw.CfnMethod;
+        cfnRagQueryMethod.addOverride('Properties.Integration.ResponseTransferMode', 'STREAM');
+
+        ragQueryFn.addPermission('ApiGwRagQueryStreamInvoke', {
+            principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+            action: 'lambda:InvokeFunction',
+            sourceArn: api.arnForExecuteApi('POST', '/v1/rag/query', 'v1'),
+        });
         // ─── Billing Dashboard — S3 + CloudFront ──────────────────────────────────
         const dashboardBucket = new s3.Bucket(this, 'DashboardBucket', {
             blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
@@ -617,6 +784,21 @@ export class GatewayStack extends cdk.Stack {
         new cdk.CfnOutput(this, 'ApiKeysSecretArn', {
             value: apiKeysSecret.secretArn,
             description: 'Secrets Manager ARN — populate with gateway API keys JSON map',
+        });
+
+        new cdk.CfnOutput(this, 'RagIngestEndpoint', {
+            value: `${api.url}v1/rag/ingest`,
+            description: 'RAG document ingest endpoint',
+        });
+
+        new cdk.CfnOutput(this, 'RagQueryEndpoint', {
+            value: `${api.url}v1/rag/query`,
+            description: 'RAG query endpoint (streaming)',
+        });
+
+        new cdk.CfnOutput(this, 'RagVectorBucketName', {
+            value: ragVectorBucketName,
+            description: 'S3 Vectors bucket name for RAG',
         });
     }
 }
